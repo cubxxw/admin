@@ -3,17 +3,17 @@ package examples
 import (
 	"fmt"
 	"net/http"
-	"reflect"
-	"runtime"
 	"strings"
 
-	"github.com/iancoleman/strcase"
-	"github.com/qor5/admin/v3/presets"
 	"github.com/qor5/web/v3"
+	"github.com/qor5/web/v3/examples"
 	"github.com/theplant/osenv"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"github.com/qor5/admin/v3/autocomplete"
+	"github.com/qor5/admin/v3/presets"
 )
 
 var db *gorm.DB
@@ -34,16 +34,6 @@ func ExampleDB() (r *gorm.DB) {
 	return
 }
 
-func URLPathByFunc(v interface{}) string {
-	funcNameWithPkg := runtime.FuncForPC(reflect.ValueOf(v).Pointer()).Name()
-	segs := strings.Split(funcNameWithPkg, ".")
-	return "/samples/" + strcase.ToKebab(segs[len(segs)-1])
-}
-
-type Muxer interface {
-	Handle(pattern string, handler http.Handler)
-}
-
 func AddGA(ctx *web.EventContext) {
 	if strings.Index(ctx.R.Host, "localhost") >= 0 {
 		return
@@ -61,9 +51,27 @@ func AddGA(ctx *web.EventContext) {
 `)
 }
 
-func AddPresetExample(mux Muxer, f func(*presets.Builder, *gorm.DB) http.Handler) {
-	path := URLPathByFunc(f)
+func AddPresetExample(mux examples.Muxer, f func(*presets.Builder, *gorm.DB) http.Handler) {
+	path := examples.URLPathByFunc(f)
 	fmt.Println("Examples mounting path:", path)
 	p := presets.New().AssetFunc(AddGA).URIPrefix(path)
 	mux.Handle(path, f(p, ExampleDB()))
+}
+
+func AddPresetAutocompleteExample(mux examples.Muxer, f func(*presets.Builder, *autocomplete.Builder, *gorm.DB) http.Handler) {
+	ab := autocomplete.New().Prefix("/examples/api/complete")
+	// mux.Handle("/examples/api/complete", ab)
+	path := examples.URLPathByFunc(f)
+	fmt.Println("Examples mounting path:", path)
+	p := presets.New().AssetFunc(AddGA).URIPrefix(path)
+	mux.Handle(path, f(p, ab, ExampleDB()))
+	// mux after models add
+	ab.Mux(mux)
+}
+
+func AddPresetsLinkageSelectFilterItemRemoteExample(mux examples.Muxer, f func(*presets.Builder, examples.Muxer, *gorm.DB) http.Handler) {
+	path := examples.URLPathByFunc(f)
+	fmt.Println("Examples mounting path:", path)
+	p := presets.New().AssetFunc(AddGA).URIPrefix(path)
+	mux.Handle(path, f(p, mux, ExampleDB()))
 }

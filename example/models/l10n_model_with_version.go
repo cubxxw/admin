@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/qor/oss"
 	"github.com/qor5/admin/v3/l10n"
 	"github.com/qor5/admin/v3/publish"
+	"github.com/qor5/x/v3/oss"
 	"gorm.io/gorm"
 )
 
@@ -39,11 +39,11 @@ func (lmv *L10nModelWithVersion) PrimaryColumnValuesBySlug(slug string) map[stri
 	}
 }
 
-func (lmv *L10nModelWithVersion) GetPublishActions(db *gorm.DB, ctx context.Context, storage oss.StorageInterface) (objs []*publish.PublishAction, err error) {
+func (lmv *L10nModelWithVersion) GetPublishActions(ctx context.Context, db *gorm.DB, storage oss.StorageInterface) (actions []*publish.PublishAction, err error) {
 	return
 }
 
-func (lmv *L10nModelWithVersion) GetUnPublishActions(db *gorm.DB, ctx context.Context, storage oss.StorageInterface) (objs []*publish.PublishAction, err error) {
+func (lmv *L10nModelWithVersion) GetUnPublishActions(ctx context.Context, db *gorm.DB, storage oss.StorageInterface) (actions []*publish.PublishAction, err error) {
 	return
 }
 

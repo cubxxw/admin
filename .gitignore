@@ -1,5 +1,3 @@
-.idea
-.DS_Store
 go.work*
 dev_env_local
 __*
@@ -8,3 +6,5 @@ coverage.html
 .vscode
 _backup
 docs/docsrc/public
+.DS_Store
+.idea

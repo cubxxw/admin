@@ -9,11 +9,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/theplant/testingutils"
+	"gorm.io/gorm"
+
 	"github.com/qor5/admin/v3/l10n"
 	"github.com/qor5/admin/v3/presets"
 	"github.com/qor5/admin/v3/presets/gorm2op"
-	"github.com/theplant/testingutils"
-	"gorm.io/gorm"
 )
 
 func TestUpdate(t *testing.T) {
@@ -40,7 +41,7 @@ func TestUpdate(t *testing.T) {
 				}
 			},
 			builder: func() *Builder {
-				builder := New(dbForTest, WithLocales("en"))
+				builder := New(dbForTest, WithLocales("en")).AutoMigrate()
 				builder.RegisterSEO("Product Detail")
 				builder.RegisterSEO("Product")
 				return builder
@@ -77,7 +78,7 @@ func TestUpdate(t *testing.T) {
 				}
 			},
 			builder: func() *Builder {
-				builder := New(dbForTest)
+				builder := New(dbForTest).AutoMigrate()
 				builder.RegisterSEO("Product Detail")
 				builder.RegisterSEO("Product")
 				return builder
@@ -117,7 +118,7 @@ func TestUpdate(t *testing.T) {
 				}
 			},
 			builder: func() *Builder {
-				builder := New(dbForTest, WithLocales("en"))
+				builder := New(dbForTest, WithLocales("en")).AutoMigrate()
 				builder.RegisterSEO("Product Detail")
 				builder.RegisterSEO("Product")
 				return builder
@@ -126,6 +127,7 @@ func TestUpdate(t *testing.T) {
 				form := &bytes.Buffer{}
 				mwriter := multipart.NewWriter(form)
 				must(mwriter.WriteField("Variables.varA", "B"))
+				must(mwriter.WriteField("Setting.Title", "productA"))
 				must(mwriter.WriteField("id", fmt.Sprintf("Product_%s", "en")))
 				must(mwriter.Close())
 				return form, mwriter
@@ -155,7 +157,7 @@ func TestUpdate(t *testing.T) {
 			server := httptest.NewServer(admin)
 
 			l10nBuilder := l10n.New(dbForTest)
-			l10nBuilder.RegisterLocales(c.locale, c.locale, c.locale)
+			l10nBuilder.RegisterLocales(c.locale, c.locale, c.locale, "")
 			builder := c.builder()
 			builder.Install(admin)
 

@@ -6,44 +6,64 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/qor5/admin/v3/example/models"
-	"github.com/qor5/admin/v3/role"
 	"github.com/qor5/x/v3/login"
 	"github.com/qor5/x/v3/sitemap"
 	"gorm.io/gorm"
+
+	"github.com/qor5/admin/v3/example/models"
+	"github.com/qor5/admin/v3/role"
 )
 
 //go:embed assets/favicon.ico
 var favicon []byte
 
 const (
-	logoutURL = "/auth/logout"
-
 	exportOrdersURL = "/export-orders"
 )
 
-func TestHandler(db *gorm.DB) http.Handler {
+func TestHandlerComplex(db *gorm.DB, u *models.User, enableWork bool, opts ...ConfigOption) (http.Handler, Config) {
 	mux := http.NewServeMux()
-	c := NewConfig(db)
-	u := &models.User{
-		Model: gorm.Model{ID: 888},
-		Roles: []role.Role{
-			{
-				Name: "admin",
+	c := NewConfig(db, enableWork, opts...)
+	if u == nil {
+		u = &models.User{
+			Model: gorm.Model{ID: 888},
+			Roles: []role.Role{
+				{
+					Name: models.RoleAdmin,
+				},
 			},
-		},
+		}
 	}
 	m := login.MockCurrentUser(u)
 	mux.Handle("/page_builder/", m(c.pageBuilder))
 	mux.Handle("/", m(c.pb))
+	return mux, c
+}
+
+func TestHandler(db *gorm.DB, u *models.User) http.Handler {
+	mux, _ := TestHandlerComplex(db, u, false)
 	return mux
 }
 
+func TestHandlerWorker(db *gorm.DB, u *models.User) http.Handler {
+	mux, _ := TestHandlerComplex(db, u, true)
+	return mux
+}
+
+func TestL18nHandler(db *gorm.DB) (http.Handler, Config) {
+	mux := http.NewServeMux()
+	c := NewConfig(db, false)
+	c.loginSessionBuilder.Secret("test")
+	c.loginSessionBuilder.Mount(mux)
+	mux.Handle("/", c.pb)
+	return mux, c
+}
+
 func Router(db *gorm.DB) http.Handler {
-	c := NewConfig(db)
+	c := NewConfig(db, true)
 
 	mux := http.NewServeMux()
-	loginBuilder.Mount(mux)
+	c.loginSessionBuilder.Mount(mux)
 	//	mux.Handle("/frontstyle.css", c.pb.GetWebBuilder().PacksHandler("text/css", web.ComponentsPack(`
 	// :host {
 	//	all: initial;
@@ -79,10 +99,8 @@ func Router(db *gorm.DB) http.Handler {
 
 	cr := chi.NewRouter()
 	cr.Use(
-		loginBuilder.Middleware(),
-		validateSessionToken(db),
+		c.loginSessionBuilder.Middleware(),
 		withRoles(db),
-		withNoteContext(),
 		securityMiddleware(),
 	)
 	cr.Mount("/", mux)

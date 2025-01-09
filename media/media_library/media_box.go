@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/qor5/admin/v3/media/base"
 )
@@ -24,8 +25,11 @@ type MediaBox struct {
 	Description string
 	FileSizes   map[string]int `json:",omitempty"`
 	// for default image
-	Width  int `json:",omitempty"`
-	Height int `json:",omitempty"`
+	Width       int                         `json:",omitempty"`
+	Height      int                         `json:",omitempty"`
+	CropOptions map[string]*base.CropOption `json:",omitempty"`
+	Sizes       map[string]*base.Size       `json:",omitempty"`
+	CropID      map[string]string           `json:",omitempty"`
 }
 
 // MediaBoxConfig configure MediaBox metas
@@ -37,6 +41,8 @@ type MediaBoxConfig struct {
 	BackgroundColor string
 	// disable crop
 	DisableCrop bool
+	// allow to accept media_box only with URL
+	SimpleIMGURL bool
 }
 
 func (mediaBox *MediaBox) Scan(data interface{}) (err error) {
@@ -72,12 +78,34 @@ func (mediaBox *MediaBox) IsSVG() bool {
 	return base.IsSVGFormat(mediaBox.Url)
 }
 
-func (mediaBox *MediaBox) URL(styles ...string) string {
-	if mediaBox.Url != "" && len(styles) > 0 {
-		ext := path.Ext(mediaBox.Url)
-		return fmt.Sprintf("%v.%v%v", strings.TrimSuffix(mediaBox.Url, ext), styles[0], ext)
+func (mediaBox *MediaBox) URL(styles ...string) (s string) {
+	var CropID string
+	if len(styles) == 0 {
+		CropID = mediaBox.CropID[base.DefaultSizeKey]
+	} else {
+		CropID = mediaBox.CropID[styles[0]]
 	}
-	return mediaBox.Url
+	ext := path.Ext(mediaBox.Url)
+
+	defer func() {
+		if len(CropID) > 0 {
+			s = fmt.Sprintf("%v_%v%v", s, CropID, ext)
+			return
+		}
+		s = fmt.Sprintf("%v%v", s, ext)
+	}()
+	if mediaBox.Url != "" && len(styles) > 0 {
+		return fmt.Sprintf("%v.%v", strings.TrimSuffix(mediaBox.Url, ext), styles[0])
+	}
+	return strings.TrimSuffix(mediaBox.Url, ext)
+}
+
+func (mediaBox *MediaBox) URLNoCached(styles ...string) string {
+	i := mediaBox.URL(styles...)
+	if i != "" && !strings.Contains(i, "?") {
+		return i + "?" + fmt.Sprint(time.Now().Nanosecond())
+	}
+	return i
 }
 
 func (mediaBox MediaBox) WebpURL(styles ...string) string {

@@ -6,6 +6,7 @@ type Messages struct {
 	StatusDraft                             string
 	StatusOnline                            string
 	StatusOffline                           string
+	StatusNext                              string
 	Publish                                 string
 	Unpublish                               string
 	Republish                               string
@@ -29,12 +30,17 @@ type Messages struct {
 	SwitchedToNewVersion                    string
 	SuccessfullyCreated                     string
 	SuccessfullyRename                      string
+	SuccessfullyPublish                     string
+	SuccessfullyUnPublish                   string
 	OnlineVersion                           string
+	NextVersion                             string
 	VersionsList                            string
 	AllVersions                             string
 	NamedVersions                           string
 	RenameVersion                           string
 	DeleteVersionConfirmationTextTemplate   string
+	ToStatusOnlineTemplate                  string
+	ToStatusOfflineTemplate                 string
 
 	FilterTabAllVersions   string
 	FilterTabOnlineVersion string
@@ -42,6 +48,15 @@ type Messages struct {
 	Rename                 string
 	PageOverView           string
 	Duplicate              string
+
+	HeaderVersion string
+	HeaderStatus  string
+	HeaderStartAt string
+	HeaderEndAt   string
+	HeaderOption  string
+
+	HeaderDraftCount string
+	HeaderLive       string
 }
 
 func (msgr *Messages) DeleteVersionConfirmationText(versionName string) string {
@@ -49,10 +64,25 @@ func (msgr *Messages) DeleteVersionConfirmationText(versionName string) string {
 		Replace(msgr.DeleteVersionConfirmationTextTemplate)
 }
 
+func (msgr *Messages) ToStatusOnline(versionName string, scheduleTime string) string {
+	return strings.NewReplacer(
+		"{VersionName}", versionName,
+		"{ScheduleTime}", scheduleTime,
+	).Replace(msgr.ToStatusOnlineTemplate)
+}
+
+func (msgr *Messages) ToStatusOffline(versionName string, scheduleTime string) string {
+	return strings.NewReplacer(
+		"{VersionName}", versionName,
+		"{ScheduleTime}", scheduleTime,
+	).Replace(msgr.ToStatusOfflineTemplate)
+}
+
 var Messages_en_US = &Messages{
 	StatusDraft:                             "Draft",
 	StatusOnline:                            "Online",
 	StatusOffline:                           "Offline",
+	StatusNext:                              "Next",
 	Publish:                                 "Publish",
 	Unpublish:                               "Unpublish",
 	Republish:                               "Republish",
@@ -76,12 +106,17 @@ var Messages_en_US = &Messages{
 	SwitchedToNewVersion:                    "Switched To New Version",
 	SuccessfullyCreated:                     "Successfully Created",
 	SuccessfullyRename:                      "Successfully Rename",
+	SuccessfullyPublish:                     "Successfully Publish",
+	SuccessfullyUnPublish:                   "Successfully Unpublish",
 	OnlineVersion:                           "Online Version",
+	NextVersion:                             "Next Version",
 	VersionsList:                            "Versions List",
 	AllVersions:                             "All versions",
 	NamedVersions:                           "Named versions",
 	RenameVersion:                           "Rename Version",
 	DeleteVersionConfirmationTextTemplate:   "Are you sure you want to delete version {VersionName} ?",
+	ToStatusOnlineTemplate:                  "{VersionName} will be online at {ScheduleTime}",
+	ToStatusOfflineTemplate:                 "{VersionName} will be offline at {ScheduleTime}",
 
 	FilterTabAllVersions:   "All Versions",
 	FilterTabOnlineVersion: "Online Versions",
@@ -89,12 +124,22 @@ var Messages_en_US = &Messages{
 	Rename:                 "Rename",
 	PageOverView:           "Page Overview",
 	Duplicate:              "Duplicate",
+
+	HeaderVersion: "Version",
+	HeaderStatus:  "Status",
+	HeaderStartAt: "Start At",
+	HeaderEndAt:   "End At",
+	HeaderOption:  "Option",
+
+	HeaderDraftCount: "Draft Count",
+	HeaderLive:       "Live",
 }
 
 var Messages_zh_CN = &Messages{
 	StatusDraft:                             "草稿",
 	StatusOnline:                            "在线",
 	StatusOffline:                           "离线",
+	StatusNext:                              "下一个",
 	Publish:                                 "发布",
 	Unpublish:                               "取消发布",
 	Republish:                               "重新发布",
@@ -118,12 +163,17 @@ var Messages_zh_CN = &Messages{
 	SwitchedToNewVersion:                    "切换到新版本",
 	SuccessfullyCreated:                     "成功创建",
 	SuccessfullyRename:                      "成功命名",
+	SuccessfullyPublish:                     "成功发布",
+	SuccessfullyUnPublish:                   "已取消发布",
 	OnlineVersion:                           "在线版本",
+	NextVersion:                             "下个版本",
 	VersionsList:                            "版本列表",
 	AllVersions:                             "所有版本",
 	NamedVersions:                           "已命名版本",
 	RenameVersion:                           "命名版本",
 	DeleteVersionConfirmationTextTemplate:   "你确定你要删除此版本 {VersionName} 吗？",
+	ToStatusOnlineTemplate:                  "{VersionName} 将在 {ScheduleTime} 上线",
+	ToStatusOfflineTemplate:                 "{VersionName} 将在 {ScheduleTime} 下线",
 
 	FilterTabAllVersions:   "所有版本",
 	FilterTabOnlineVersion: "在线版本",
@@ -131,45 +181,70 @@ var Messages_zh_CN = &Messages{
 	Rename:                 "重命名",
 	PageOverView:           "页面概览",
 	Duplicate:              "复制",
+
+	HeaderVersion: "版本",
+	HeaderStatus:  "状态",
+	HeaderStartAt: "开始时间",
+	HeaderEndAt:   "结束时间",
+	HeaderOption:  "操作",
+
+	HeaderDraftCount: "草稿数",
+	HeaderLive:       "发布状态",
 }
 
 var Messages_ja_JP = &Messages{
 	StatusDraft:                             "下書き",
-	StatusOnline:                            "公開中",
-	StatusOffline:                           "非公開中",
+	StatusOnline:                            "オンライン",
+	StatusOffline:                           "オフライン",
+	StatusNext:                              "次",
 	Publish:                                 "公開する",
 	Unpublish:                               "非公開",
 	Republish:                               "再公開",
 	Areyousure:                              "よろしいですか？",
-	ScheduledStartAt:                        "公開開始日時",
-	ScheduledEndAt:                          "公開終了日時",
-	ScheduledStartAtShouldLaterThanNow:      "予定開始時間は現在時刻よりも後でなければなりません",
-	ScheduledEndAtShouldLaterThanNowOrEmpty: "予定終了時間は現在時刻よりも後、または空でなければなりません",
-	ScheduledEndAtShouldLaterThanStartAt:    "予定終了時間は予定開始時間よりも後でなければなりません",
-	ScheduledStartAtShouldNotEmpty:          "予定開始時間は空ではない必要があります",
-	PublishedAt:                             "開始日時",
+	ScheduledStartAt:                        "開始時刻",
+	ScheduledEndAt:                          "終了時刻",
+	ScheduledStartAtShouldLaterThanNow:      "開始時刻は現在より遅くなければならない",
+	ScheduledEndAtShouldLaterThanNowOrEmpty: "終了時刻は現在よりも遅いか、または空でなければならない",
+	ScheduledEndAtShouldLaterThanStartAt:    "終了時刻は開始時刻より遅くする",
+	ScheduledStartAtShouldNotEmpty:          "開始時刻は空であってはならない",
+	PublishedAt:                             "開始時間",
 	UnPublishedAt:                           "公開終了日時",
-	ActualPublishTime:                       "投稿日時",
-	SchedulePublishTime:                     "公開日時を設定する",
-	NotSet:                                  "未セット",
+	ActualPublishTime:                       "実際の公開時間",
+	SchedulePublishTime:                     "公開時間設定",
+	NotSet:                                  "未設定",
 	WhenDoYouWantToPublish:                  "公開日時を設定してください",
-	PublishScheduleTip:                      "{SchedulePublishTime} 設定後、システムが自動で当該記事の公開・非公開を行います。",
-	DateTimePickerClearText:                 "クリア",
+	PublishScheduleTip:                      "{SchedulePublishTime}を設定すると、システムが自動的に公開/非公開を行います。",
+	DateTimePickerClearText:                 "消去する",
 	DateTimePickerOkText:                    "OK",
-	SaveAsNewVersion:                        "新規バージョンとして保存する",
-	SwitchedToNewVersion:                    "新規バージョンに変更する",
+	SaveAsNewVersion:                        "新しいバージョンとして保存",
+	SwitchedToNewVersion:                    "新バージョンに変更しました",
 	SuccessfullyCreated:                     "作成に成功しました",
-	SuccessfullyRename:                      "名付けに成功しました",
+	SuccessfullyRename:                      "名前の変更に成功しました",
+	SuccessfullyPublish:                     "公開に成功しました",
+	SuccessfullyUnPublish:                   "非公開に成功しました",
 	OnlineVersion:                           "オンラインバージョン",
+	NextVersion:                             "次のバージョン",
 	VersionsList:                            "バージョンリスト",
-	AllVersions:                             "全てのバージョン",
-	NamedVersions:                           "名付け済みバージョン",
-	RenameVersion:                           "バージョンの名前を変更する",
-	DeleteVersionConfirmationTextTemplate:   "このバージョン {VersionName} を削除してもよろしいですか？",
+	AllVersions:                             "すべてのバージョン",
+	NamedVersions:                           "指定バージョン",
+	RenameVersion:                           "バージョン名の変更",
+	DeleteVersionConfirmationTextTemplate:   "本当にバージョン{VersionName}を削除しますか？",
+	ToStatusOnlineTemplate:                  "{VersionName} は {ScheduleTime} にオンラインになります",
+	ToStatusOfflineTemplate:                 "{VersionName} は {ScheduleTime} にオフラインになります",
 
-	FilterTabAllVersions:   "全てのバージョン",
+	FilterTabAllVersions:   "すべてのバージョン",
 	FilterTabOnlineVersion: "オンラインバージョン",
-	FilterTabNamedVersions: "名付け済みバージョン",
-	Rename:                 "名前の変更",
+	FilterTabNamedVersions: "名前付きバージョン",
+	Rename:                 "名称変更",
 	PageOverView:           "ページ概要",
+	Duplicate:              "コピー",
+
+	HeaderVersion: "バージョン",
+	HeaderStatus:  "ステータス",
+	HeaderStartAt: "開始日",
+	HeaderEndAt:   "終了時",
+	HeaderOption:  "オプション",
+
+	HeaderDraftCount: "下書き数",
+	HeaderLive:       "公開ステータス",
 }

@@ -8,7 +8,7 @@ import (
 	h "github.com/theplant/htmlgo"
 )
 
-func DefaultPageLayoutFunc(body h.HTMLComponent, input *PageLayoutInput, ctx *web.EventContext) h.HTMLComponent {
+func defaultPageLayoutFunc(body h.HTMLComponent, input *PageLayoutInput, ctx *web.EventContext) h.HTMLComponent {
 	var freeStyleCss h.HTMLComponent
 	if len(input.FreeStyleCss) > 0 {
 		freeStyleCss = h.Style(strings.Join(input.FreeStyleCss, "\n"))
@@ -19,7 +19,6 @@ func DefaultPageLayoutFunc(body h.HTMLComponent, input *PageLayoutInput, ctx *we
 	domain := "https://example.qor5.theplant-dev.com"
 
 	head := h.Components(
-		h.Meta().Attr("charset", "utf-8"),
 		input.SeoTags,
 		input.CanonicalLink,
 		h.Meta().Attr("http-equiv", "X-UA-Compatible").Content("IE=edge"),
@@ -27,7 +26,6 @@ func DefaultPageLayoutFunc(body h.HTMLComponent, input *PageLayoutInput, ctx *we
 		h.Meta().Content("yes").Name("apple-mobile-web-app-capable"),
 		h.Meta().Content("black").Name("apple-mobile-web-app-status-bar-style"),
 		h.Meta().Name("format-detection").Content("telephone=no"),
-		h.Meta().Name("viewport").Content("width=device-width, initial-scale=1"),
 
 		h.Link("").Rel("stylesheet").Type("text/css").Href(css),
 		h.If(len(input.EditorCss) > 0, input.EditorCss...),
@@ -37,15 +35,24 @@ func DefaultPageLayoutFunc(body h.HTMLComponent, input *PageLayoutInput, ctx *we
 		scriptWithCodes(input.FreeStyleTopJs),
 	)
 	ctx.Injector.HTMLLang(input.LocaleCode)
+	if input.WrapHead != nil {
+		head = input.WrapHead(head)
+	}
 	ctx.Injector.HeadHTML(h.MustString(head, nil))
-
-	return h.Body(
+	bodies := h.Components(
 		// It's required as the body first element!
 		h.If(input.Header != nil, input.Header),
 		body,
 		h.If(input.Footer != nil, input.Footer),
 		h.Script("").Src(js),
 		scriptWithCodes(input.FreeStyleBottomJs),
+	)
+	if input.WrapBody != nil {
+		bodies = input.WrapBody(bodies)
+	}
+
+	return h.Body(
+		bodies,
 	).Attr("data-site-domain", domain)
 }
 

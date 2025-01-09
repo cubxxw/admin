@@ -4,18 +4,20 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5/middleware"
+	webexamples "github.com/qor5/web/v3/examples"
+
 	"github.com/qor5/admin/v3/docs/docsrc/examples"
 	"github.com/qor5/admin/v3/docs/docsrc/examples/examples_presets"
 	"github.com/qor5/admin/v3/docs/docsrc/examples/examples_vuetify"
 )
 
-func Mux(mux *http.ServeMux, prefix string) http.Handler {
-	examples_vuetify.Mux(mux, prefix)
+func Mux(mux *http.ServeMux) http.Handler {
+	examples_vuetify.Mux(mux)
 
-	im := &examples_vuetify.IndexMux{Mux: http.NewServeMux()}
-	SamplesHandler(im, prefix)
+	im := &webexamples.IndexMux{Mux: http.NewServeMux()}
+	SamplesHandler(im)
 
-	mux.Handle("/samples/",
+	mux.Handle("/examples/",
 		middleware.Logger(
 			middleware.RequestID(
 				im.Mux,
@@ -26,10 +28,11 @@ func Mux(mux *http.ServeMux, prefix string) http.Handler {
 	return mux
 }
 
-func SamplesHandler(mux examples.Muxer, prefix string) {
-	examples_vuetify.SamplesHandler(mux, prefix)
-	examples_presets.SamplesHandler(mux, prefix)
+func SamplesHandler(mux webexamples.Muxer) {
+	examples_vuetify.SamplesHandler(mux)
+	examples_presets.SamplesHandler(mux)
 
+	examples.AddPresetExample(mux, ChangePasswordExample)
 	examples.AddPresetExample(mux, ListingExample)
 	examples.AddPresetExample(mux, WorkerExample)
 	examples.AddPresetExample(mux, ActionWorkerExample)
@@ -38,5 +41,13 @@ func SamplesHandler(mux examples.Muxer, prefix string) {
 	examples.AddPresetExample(mux, PublishExample)
 	examples.AddPresetExample(mux, SEOExampleBasic)
 	examples.AddPresetExample(mux, ActivityExample)
+	examples.AddPresetExample(mux, AutoSyncExample)
+	examples.AddPresetExample(mux, ProfileExample)
 	examples.AddPresetExample(mux, PageBuilderExample)
+	examples.AddPresetExample(mux, MediaExample)
+	examples.AddPresetExample(mux, MediaAllowTypesExample)
+	examples.AddPresetExample(mux, SingletonExample)
+
+	examples.AddPresetAutocompleteExample(mux, AutoCompleteBasicFilterExample)
+	examples.AddPresetsLinkageSelectFilterItemRemoteExample(mux, LinkageSelectFilterItemRemoteExample)
 }

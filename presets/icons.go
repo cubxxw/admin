@@ -2,8 +2,8 @@ package presets
 
 import h "github.com/theplant/htmlgo"
 
-var languageSwitchIcon = h.RawHTML(`
-<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+const (
+	EnLanguageIcon = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
 <g clip-path="url(#clip0_2_4948)">
 <mask id="mask0_2_4948" style="mask-type:luminance" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
 <rect width="24" height="24" fill="white"/>
@@ -52,7 +52,20 @@ var languageSwitchIcon = h.RawHTML(`
 </clipPath>
 </defs>
 </svg>
-`)
+`
+	ZhLanguageIcon = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="24" height="24" rx="12" fill="#F93939"/>
+  <path d="M14 6h1.333v1.333H14V6zm1.333 2.667h1.334V10H15.333V8.667zm0 2.666h1.334V12.667H15.333v-1.334zm-1.333 2.667h1.333v1.333H14v-1.333z" fill="#FFDA2C"/>
+  <path fill-rule="evenodd" clip-rule="evenodd" d="M9.331 11.64l-1.96 1.031.373-2.183-1.584-1.547 2.191-.316.98-1.986.979 1.986 2.191.316-1.587 1.547.376 2.181-1.958-1.029z" fill="#FFDA2C"/>
+  <rect x="0.5" y="0.5" width="23" height="23" rx="11.5" stroke="#EEEEEE"/>
+</svg>`
+	JPIcon = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0.5" y="0.5" width="23" height="23" rx="9.5" stroke="#EEEEEE"/>
+  <rect x="1" y="1" width="22" height="22" rx="10.5" stroke="black" stroke-opacity="0.1"/>
+  <circle cx="12" cy="12" r="4.333" fill="#F93939"/>
+</svg>
+`
+)
 
 var Divider = h.RawHTML(`<svg width="1120" height="2" viewBox="0 0 1120 2" fill="none">
 <path d="M0 1H1120" stroke="#01012E" stroke-opacity="0.134"/>

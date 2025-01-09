@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/qor/oss"
+	"github.com/qor5/x/v3/oss"
 	"gorm.io/gorm"
 )
 
@@ -36,7 +36,7 @@ type Schedule struct {
 // @snippet_end
 
 // @snippet_begin(PublishStatus)
-const (
+var (
 	StatusDraft   = "draft"
 	StatusOnline  = "online"
 	StatusOffline = "offline"
@@ -51,27 +51,36 @@ type Status struct {
 
 // @snippet_begin(PublishVersion)
 type Version struct {
-	Version       string `gorm:"primary_key;size:128;not null;"`
+	Version       string `gorm:"primaryKey;size:128;not null;"`
 	VersionName   string
 	ParentVersion string
 }
 
 // @snippet_end
-
-type PublishInterface interface {
-	GetPublishActions(db *gorm.DB, ctx context.Context, storage oss.StorageInterface) (actions []*PublishAction, err error)
-}
+type (
+	PublishActionsFunc func(ctx context.Context, db *gorm.DB, storage oss.StorageInterface, obj any) (actions []*PublishAction, err error)
+	PublishInterface   interface {
+		GetPublishActions(ctx context.Context, db *gorm.DB, storage oss.StorageInterface) (actions []*PublishAction, err error)
+	}
+)
 
 type UnPublishInterface interface {
-	GetUnPublishActions(db *gorm.DB, ctx context.Context, storage oss.StorageInterface) (actions []*PublishAction, err error)
+	GetUnPublishActions(ctx context.Context, db *gorm.DB, storage oss.StorageInterface) (actions []*PublishAction, err error)
+}
+
+type WrapPublishInterface interface {
+	WrapPublishActions(in PublishActionsFunc) PublishActionsFunc
+}
+type WrapUnPublishInterface interface {
+	WrapUnPublishActions(in PublishActionsFunc) PublishActionsFunc
 }
 
 type AfterPublishInterface interface {
-	AfterPublish(db *gorm.DB, storage oss.StorageInterface, ctx context.Context) error
+	AfterPublish(ctx context.Context, db *gorm.DB, storage oss.StorageInterface) error
 }
 
 type AfterUnPublishInterface interface {
-	AfterUnPublish(db *gorm.DB, storage oss.StorageInterface, ctx context.Context) error
+	AfterUnPublish(ctx context.Context, db *gorm.DB, storage oss.StorageInterface) error
 }
 
 type StatusInterface interface {
@@ -83,12 +92,15 @@ func (s *Status) EmbedStatus() *Status {
 }
 
 func EmbedStatus(v any) *Status {
-	return v.(StatusInterface).EmbedStatus()
+	iface, ok := v.(StatusInterface)
+	if !ok {
+		return nil
+	}
+	return iface.EmbedStatus()
 }
 
 type VersionInterface interface {
 	EmbedVersion() *Version
-	CreateVersion(db *gorm.DB, paramID string, obj interface{}) (string, error)
 }
 
 func (s *Version) EmbedVersion() *Version {
@@ -96,7 +108,11 @@ func (s *Version) EmbedVersion() *Version {
 }
 
 func EmbedVersion(v any) *Version {
-	return v.(VersionInterface).EmbedVersion()
+	iface, ok := v.(VersionInterface)
+	if !ok {
+		return nil
+	}
+	return iface.EmbedVersion()
 }
 
 type ScheduleInterface interface {
@@ -107,6 +123,14 @@ func (s *Schedule) EmbedSchedule() *Schedule {
 	return s
 }
 
+func EmbedSchedule(v any) *Schedule {
+	iface, ok := v.(ScheduleInterface)
+	if !ok {
+		return nil
+	}
+	return iface.EmbedSchedule()
+}
+
 type ListInterface interface {
 	EmbedList() *List
 }
@@ -114,3 +138,13 @@ type ListInterface interface {
 func (s *List) EmbedList() *List {
 	return s
 }
+
+type (
+	PreviewBuilderInterface interface {
+		PreviewHTML(obj interface{}) string
+		ExistedL10n() bool
+	}
+	PublishModelInterface interface {
+		PublishUrl(db *gorm.DB, ctx context.Context, storage oss.StorageInterface) string
+	}
+)

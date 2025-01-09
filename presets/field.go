@@ -2,6 +2,7 @@ package presets
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -13,10 +14,13 @@ import (
 	"unicode"
 
 	"github.com/qor5/web/v3"
-	"github.com/qor5/x/v3/i18n"
-	v "github.com/qor5/x/v3/ui/vuetify"
 	"github.com/sunfmin/reflectutils"
 	h "github.com/theplant/htmlgo"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
+	"github.com/qor5/x/v3/i18n"
+	v "github.com/qor5/x/v3/ui/vuetify"
 )
 
 type FieldContext struct {
@@ -32,18 +36,23 @@ type FieldContext struct {
 
 func (fc *FieldContext) StringValue(obj interface{}) (r string) {
 	val := fc.Value(obj)
-	switch vt := val.(type) {
-	case []rune:
-		return string(vt)
-	case []byte:
-		return string(vt)
-	case time.Time:
-		return vt.Format("2006-01-02 15:04:05")
-	case *time.Time:
-		if vt == nil {
-			return ""
+	if val != nil {
+		switch vt := val.(type) {
+		case []rune:
+			return string(vt)
+		case []byte:
+			return string(vt)
+		case time.Time:
+			if vt.IsZero() {
+				return ""
+			}
+			return vt.Format("2006-01-02 15:04:05")
+		case *time.Time:
+			if vt.IsZero() {
+				return ""
+			}
+			return vt.Format("2006-01-02 15:04:05")
 		}
-		return vt.Format("2006-01-02 15:04:05")
 	}
 	return fmt.Sprint(val)
 }
@@ -60,16 +69,55 @@ func (fc *FieldContext) ContextValue(key interface{}) (r interface{}) {
 	return fc.Context.Value(key)
 }
 
+type FieldsBuilder struct {
+	model       interface{}
+	defaults    *FieldDefaults
+	fieldLabels []string
+	fields      []*FieldBuilder
+	// string / []string / *FieldsSection
+	fieldsLayout []interface{}
+}
+
 type FieldBuilder struct {
 	NameLabel
-	compFunc            FieldComponentFunc
+	hidden              bool
+	comp                FieldComponentInterface
+	lazyWrapCompFunc    func(in FieldComponentFunc) FieldComponentFunc
 	setterFunc          FieldSetterFunc
+	lazyWrapSetterFunc  func(in FieldSetterFunc) FieldSetterFunc
 	context             context.Context
 	rt                  reflect.Type
 	nestedFieldsBuilder *FieldsBuilder
+	tabFieldsBuilders   *TabsFieldBuilder
+	plugins             []FieldPlugin
+}
+
+type FieldComponentInterface interface {
+	FieldComponent(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent
+}
+
+func (f FieldComponentFunc) FieldComponent(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent {
+	return f(obj, field, ctx)
+}
+
+func (b *FieldBuilder) GetComponent() FieldComponentInterface {
+	return b.comp
+}
+
+func (b *FieldBuilder) GetCompFunc() FieldComponentFunc {
+	if b.comp == nil {
+		return nil
+	}
+	return b.comp.FieldComponent
 }
 
 func (b *FieldsBuilder) appendNewFieldWithName(name string) (r *FieldBuilder) {
+	r = b.NewFieldWithName(name)
+	b.fields = append(b.fields, r)
+	return
+}
+
+func (b *FieldsBuilder) NewFieldWithName(name string) (r *FieldBuilder) {
 	r = &FieldBuilder{}
 
 	if b.model == nil {
@@ -90,12 +138,7 @@ func (b *FieldsBuilder) appendNewFieldWithName(name string) (r *FieldBuilder) {
 	r.name = name
 	// r.ComponentFunc(ft.compFunc).
 	// 	SetterFunc(ft.setterFunc)
-	b.fields = append(b.fields, r)
 	return
-}
-
-func (b *FieldBuilder) GetCompFunc() FieldComponentFunc {
-	return b.compFunc
 }
 
 func (b *FieldBuilder) Label(v string) (r *FieldBuilder) {
@@ -107,8 +150,15 @@ func (b *FieldBuilder) Clone() (r *FieldBuilder) {
 	r = &FieldBuilder{}
 	r.name = b.name
 	r.label = b.label
-	r.compFunc = b.compFunc
+	r.comp = b.comp
+	r.lazyWrapCompFunc = b.lazyWrapCompFunc
 	r.setterFunc = b.setterFunc
+	r.lazyWrapSetterFunc = b.lazyWrapSetterFunc
+	r.nestedFieldsBuilder = b.nestedFieldsBuilder
+	r.tabFieldsBuilders = b.tabFieldsBuilders
+	r.context = b.context
+	r.rt = b.rt
+	r.plugins = b.plugins
 	return r
 }
 
@@ -116,13 +166,67 @@ func (b *FieldBuilder) ComponentFunc(v FieldComponentFunc) (r *FieldBuilder) {
 	if v == nil {
 		panic("value required")
 	}
-	b.compFunc = v
+	b.comp = v
 	return b
+}
+
+func (b *FieldBuilder) Component(v FieldComponentInterface) (r *FieldBuilder) {
+	if v == nil {
+		panic("value required")
+	}
+	b.comp = v
+	return b
+}
+
+// WrapperFieldLabel a snippet for LazyWrapComponentFunc
+func WrapperFieldLabel(mapper func(evCtx *web.EventContext, obj interface{}, field *FieldContext) (name2label map[string]string, err error)) func(in FieldComponentFunc) FieldComponentFunc {
+	return func(in FieldComponentFunc) FieldComponentFunc {
+		return func(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent {
+			m, err := mapper(ctx, obj, field)
+			if err != nil {
+				panic(err)
+			}
+			if label, ok := m[field.Name]; ok {
+				field.Label = label
+			}
+			return in(obj, field, ctx)
+		}
+	}
+}
+
+func (b *FieldBuilder) LazyWrapComponentFunc(w func(in FieldComponentFunc) FieldComponentFunc) (r *FieldBuilder) {
+	b.lazyWrapCompFunc = w
+	return b
+}
+
+func (b *FieldBuilder) lazyCompFunc() FieldComponentInterface {
+	if b.lazyWrapCompFunc == nil {
+		return b.GetCompFunc()
+	}
+	return b.lazyWrapCompFunc(b.comp.FieldComponent)
 }
 
 func (b *FieldBuilder) SetterFunc(v FieldSetterFunc) (r *FieldBuilder) {
 	b.setterFunc = v
 	return b
+}
+
+func (b *FieldBuilder) LazyWrapSetterFunc(w func(in FieldSetterFunc) FieldSetterFunc) (r *FieldBuilder) {
+	b.lazyWrapSetterFunc = w
+	return b
+}
+
+func (b *FieldBuilder) lazySetterFunc() FieldSetterFunc {
+	setterFunc := b.setterFunc
+	if setterFunc == nil {
+		setterFunc = func(obj interface{}, field *FieldContext, ctx *web.EventContext) (err error) {
+			return nil
+		}
+	}
+	if b.lazyWrapSetterFunc == nil {
+		return setterFunc
+	}
+	return b.lazyWrapSetterFunc(setterFunc)
 }
 
 func (b *FieldBuilder) WithContextValue(key interface{}, val interface{}) (r *FieldBuilder) {
@@ -208,18 +312,53 @@ func (b *FieldBuilder) Nested(fb *FieldsBuilder, cfgs ...NestedConfig) (r *Field
 	return b
 }
 
+func (b *FieldBuilder) GetNestedFieldsBuilder() *FieldsBuilder {
+	return b.nestedFieldsBuilder
+}
+
+func (b *FieldBuilder) AppendTabs(fb *FieldBuilder) (r *FieldBuilder) {
+	if b.tabFieldsBuilders == nil {
+		b.tabFieldsBuilders = NewTabsFieldBuilder()
+	}
+	b.tabFieldsBuilders.AppendTabField(fb.name, fb.label, fb.GetCompFunc())
+	b.ComponentFunc(b.tabFieldsBuilders.ComponentFunc())
+	fb.hidden = true
+	return b
+}
+
+func (b *FieldBuilder) Tab(fb *TabsFieldBuilder) (r *FieldBuilder) {
+	b.tabFieldsBuilders = fb
+	b.ComponentFunc(b.tabFieldsBuilders.ComponentFunc())
+	return b
+}
+
 type NameLabel struct {
 	name  string
 	label string
 }
 
-type FieldsBuilder struct {
-	model       interface{}
-	defaults    *FieldDefaults
-	fieldLabels []string
-	fields      []*FieldBuilder
-	// string / []string / *FieldsSection
-	fieldsLayout []interface{}
+func CloneFieldsLayout(layout []interface{}) (r []interface{}) {
+	r = make([]interface{}, len(layout))
+	for i, v := range layout {
+		switch t := v.(type) {
+		case string:
+			r[i] = t
+		case []string:
+			r[i] = slices.Clone(t)
+		case *FieldsSection:
+			rows := make([][]string, len(t.Rows))
+			for j, row := range t.Rows {
+				rows[j] = slices.Clone(row)
+			}
+			r[i] = &FieldsSection{
+				Title: t.Title,
+				Rows:  rows,
+			}
+		default:
+			panic("unknown fields layout, must be string/[]string/*FieldsSection")
+		}
+	}
+	return
 }
 
 type FieldsSection struct {
@@ -311,23 +450,25 @@ func (b *FieldsBuilder) SetObjectFields(fromObj interface{}, toObj interface{}, 
 		if err1 == nil {
 			reflectutils.Set(toObj, f.name, val)
 		}
-
-		if f.setterFunc == nil {
-			continue
-		}
-
 		keyPath := f.name
 		if parent != nil && parent.FormKey != "" {
 			keyPath = fmt.Sprintf("%s.%s", parent.FormKey, f.name)
 		}
-		err1 = f.setterFunc(toObj, &FieldContext{
+		err1 = f.lazySetterFunc()(toObj, &FieldContext{
 			ModelInfo: info,
 			FormKey:   keyPath,
 			Name:      f.name,
 			Label:     b.getLabel(f.NameLabel),
 		}, ctx)
 		if err1 != nil {
-			vErr.FieldError(f.name, err1.Error())
+			var vErr1 *web.ValidationErrors
+			if errors.As(err1, &vErr1) {
+				_ = vErr.Merge(vErr1)
+			} else if web.IsValidationGlobalError(err1) {
+				vErr.GlobalError(err1.Error())
+			} else {
+				vErr.FieldError(f.name, err1.Error())
+			}
 		}
 	}
 	return
@@ -366,8 +507,6 @@ func (b *FieldsBuilder) setToObjNilOrDelete(toObj interface{}, formKey string, f
 	if err != nil {
 		panic(err)
 	}
-
-	return
 }
 
 func (b *FieldsBuilder) setWithChildFromObjs(
@@ -469,7 +608,7 @@ func humanizeString(str string) string {
 		}
 		human = append(human, l)
 	}
-	return strings.Title(string(human))
+	return cases.Title(language.Und, cases.NoLower).String(string(human))
 }
 
 func (b *FieldsBuilder) getLabel(field NameLabel) (r string) {
@@ -488,7 +627,7 @@ func (b *FieldsBuilder) getLabel(field NameLabel) (r string) {
 
 func (b *FieldsBuilder) getFieldOrDefault(name string) (r *FieldBuilder) {
 	r = b.GetField(name)
-	if r.compFunc == nil {
+	if r.comp == nil {
 		if b.defaults == nil {
 			panic("field defaults must be provided")
 		}
@@ -499,8 +638,10 @@ func (b *FieldsBuilder) getFieldOrDefault(name string) (r *FieldBuilder) {
 		}
 
 		ft := b.defaults.fieldTypeByTypeOrCreate(fType)
-		r.ComponentFunc(ft.compFunc).
-			SetterFunc(ft.setterFunc)
+		r.ComponentFunc(ft.compFunc)
+		if r.setterFunc == nil {
+			r.SetterFunc(ft.setterFunc)
+		}
 	}
 	return
 }
@@ -521,14 +662,10 @@ func (b *FieldsBuilder) getFieldNamesFromLayout() []string {
 		case string:
 			ns = append(ns, t)
 		case []string:
-			for _, n := range t {
-				ns = append(ns, n)
-			}
+			ns = append(ns, t...)
 		case *FieldsSection:
 			for _, row := range t.Rows {
-				for _, n := range row {
-					ns = append(ns, n)
-				}
+				ns = append(ns, row...)
 			}
 		default:
 			panic("unknown fields layout, must be string/[]string/*FieldsSection")
@@ -571,11 +708,59 @@ func (b *FieldsBuilder) Except(patterns ...string) (r *FieldsBuilder) {
 
 	r = b.Clone()
 
-	for _, f := range b.fields {
-		if hasMatched(patterns, f.name) {
-			continue
+	if len(b.fieldsLayout) == 0 {
+		for _, f := range b.fields {
+			if hasMatched(patterns, f.name) {
+				continue
+			}
+			r.appendFieldAfterClone(b, f.name)
 		}
-		r.appendFieldAfterClone(b, f.name)
+		return r
+	}
+
+	var fieldsLayout []any
+	for _, iv := range b.fieldsLayout {
+		switch t := iv.(type) {
+		case string:
+			if !hasMatched(patterns, t) {
+				fieldsLayout = append(fieldsLayout, t)
+			}
+		case []string:
+			var ns []string
+			for _, n := range t {
+				if !hasMatched(patterns, n) {
+					ns = append(ns, n)
+				}
+			}
+			if len(ns) > 0 {
+				fieldsLayout = append(fieldsLayout, ns)
+			}
+		case *FieldsSection:
+			section := &FieldsSection{
+				Title: t.Title,
+				Rows:  [][]string{},
+			}
+			for _, row := range t.Rows {
+				var ns []string
+				for _, n := range row {
+					if !hasMatched(patterns, n) {
+						ns = append(ns, n)
+					}
+				}
+				if len(ns) > 0 {
+					section.Rows = append(section.Rows, ns)
+				}
+			}
+			if len(section.Rows) > 0 {
+				fieldsLayout = append(fieldsLayout, section)
+			}
+		default:
+			panic("unknown fields layout, must be string/[]string/*FieldsSection")
+		}
+	}
+	r.fieldsLayout = fieldsLayout
+	for _, fn := range r.getFieldNamesFromLayout() {
+		r.appendFieldAfterClone(b, fn)
 	}
 	return
 }
@@ -597,6 +782,8 @@ func (b *FieldsBuilder) toComponentWithModifiedIndexes(info *ModelInfo, obj inte
 	return b.toComponentWithFormValueKey(info, obj, parentFormValueKey, modifiedIndexes, ctx)
 }
 
+type ctxKeyForceForCreating struct{}
+
 func (b *FieldsBuilder) toComponentWithFormValueKey(info *ModelInfo, obj interface{}, parentFormValueKey string, modifiedIndexes *ModifiedIndexesBuilder, ctx *web.EventContext) h.HTMLComponent {
 	var comps []h.HTMLComponent
 	if parentFormValueKey == "" {
@@ -608,10 +795,9 @@ func (b *FieldsBuilder) toComponentWithFormValueKey(info *ModelInfo, obj interfa
 		vErr = &web.ValidationErrors{}
 	}
 
-	id, err := reflectutils.Get(obj, "ID")
-	edit := false
-	if err == nil && len(fmt.Sprint(id)) > 0 && fmt.Sprint(id) != "0" {
-		edit = true
+	edit := ObjectID(obj) != ""
+	if ctx.ContextValue(ctxKeyForceForCreating{}) == true {
+		edit = false
 	}
 
 	var layout []interface{}
@@ -621,7 +807,7 @@ func (b *FieldsBuilder) toComponentWithFormValueKey(info *ModelInfo, obj interfa
 			layout = append(layout, f.name)
 		}
 	} else {
-		layout = b.fieldsLayout[:]
+		layout = b.fieldsLayout
 		layoutFM := make(map[string]struct{})
 		for _, fn := range b.getFieldNamesFromLayout() {
 			layoutFM[fn] = struct{}{}
@@ -630,7 +816,9 @@ func (b *FieldsBuilder) toComponentWithFormValueKey(info *ModelInfo, obj interfa
 			if _, ok := layoutFM[f.name]; ok {
 				continue
 			}
-			layout = append(layout, f.name)
+			if !f.hidden {
+				layout = append(layout, f.name)
+			}
 		}
 	}
 	for _, iv := range layout {
@@ -668,12 +856,14 @@ func (b *FieldsBuilder) toComponentWithFormValueKey(info *ModelInfo, obj interfa
 			if len(rowsComp) > 0 {
 				var titleComp h.HTMLComponent
 				if t.Title != "" {
-					titleComp = h.Label(t.Title).Class("v-label theme--light text-caption")
+					titleComp = h.H2(i18n.PT(ctx.R, ModelsI18nModuleKey, info.Label(), t.Title)).Class("section-title")
 				}
 				comp = h.Div(
-					titleComp,
-					v.VCard(rowsComp...).Variant(v.VariantOutlined).Class("mx-0 mt-1 mb-4 px-4 pb-0 pt-4"),
-				)
+					h.Div(titleComp).Class("section-title-wrap"),
+					h.Div(
+						v.VCard(rowsComp...).Variant(v.VariantFlat).Class("mx-0 mt-1  px-4 pb-0 pt-4 section-body"),
+					).Class("section-body border-b"),
+				).Class("section-wrap")
 			}
 		default:
 			panic("unknown fields layout, must be string/[]string/*FieldsSection")
@@ -683,8 +873,9 @@ func (b *FieldsBuilder) toComponentWithFormValueKey(info *ModelInfo, obj interfa
 		}
 		comps = append(comps, comp)
 	}
-
-	return h.Components(comps...)
+	return h.Components(
+		comps...,
+	)
 }
 
 func (b *FieldsBuilder) fieldToComponentWithFormValueKey(info *ModelInfo, obj interface{}, parentFormValueKey string, ctx *web.EventContext, name string, edit bool, vErr *web.ValidationErrors) h.HTMLComponent {
@@ -711,16 +902,18 @@ func (b *FieldsBuilder) fieldToComponentWithFormValueKey(info *ModelInfo, obj in
 			disabled = info.Verifier().Do(PermCreate).ObjectOn(obj).SnakeOn("f_"+f.name).WithReq(ctx.R).IsAllowed() != nil
 		}
 	}
-	return f.compFunc(obj, &FieldContext{
-		ModelInfo:           info,
-		Name:                f.name,
-		FormKey:             contextKeyPath,
-		Label:               label,
-		Errors:              vErr.GetFieldErrors(f.name),
-		NestedFieldsBuilder: f.nestedFieldsBuilder,
-		Context:             f.context,
-		Disabled:            disabled,
-	}, ctx)
+	return h.Div(
+		f.lazyCompFunc().FieldComponent(obj, &FieldContext{
+			ModelInfo:           info,
+			Name:                f.name,
+			FormKey:             contextKeyPath,
+			Label:               label,
+			Errors:              vErr.GetFieldErrors(contextKeyPath),
+			NestedFieldsBuilder: f.nestedFieldsBuilder,
+			Context:             f.context,
+			Disabled:            disabled,
+		}, ctx),
+	).Attr("v-show", fmt.Sprintf("!dash.visible || dash.visible[%q]===undefined || dash.visible[%q]", contextKeyPath, contextKeyPath))
 }
 
 type RowFunc func(obj interface{}, formKey string, content h.HTMLComponent, ctx *web.EventContext) h.HTMLComponent
@@ -786,7 +979,7 @@ func (b *ModifiedIndexesBuilder) AppendDeleted(sliceFormKey string, index int) (
 	return b
 }
 
-func (b *ModifiedIndexesBuilder) SetSorted(sliceFormKey string, indexes []string) (r *ModifiedIndexesBuilder) {
+func (b *ModifiedIndexesBuilder) Sorted(sliceFormKey string, indexes []string) (r *ModifiedIndexesBuilder) {
 	if b.sortedValues == nil {
 		b.sortedValues = make(map[string][]string)
 	}
@@ -866,7 +1059,7 @@ func (b *ModifiedIndexesBuilder) FromHidden(req *http.Request) (r *ModifiedIndex
 	return b
 }
 
-func (b *ModifiedIndexesBuilder) ReversedmodifiedIndexes(sliceFormKey string) (r []int) {
+func (b *ModifiedIndexesBuilder) ReversedModifiedIndexes(sliceFormKey string) (r []int) {
 	if b.deletedValues == nil {
 		return
 	}

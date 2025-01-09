@@ -3,146 +3,391 @@ package pagebuilder
 import (
 	"errors"
 	"fmt"
-	"strings"
 
-	vx "github.com/qor5/x/v3/ui/vuetifyx"
-
-	"github.com/qor5/admin/v3/l10n"
-	"github.com/qor5/admin/v3/presets"
-	"github.com/qor5/admin/v3/presets/actions"
-	"github.com/qor5/admin/v3/publish"
 	"github.com/qor5/web/v3"
+	"github.com/qor5/x/v3/i18n"
+	"github.com/qor5/x/v3/perm"
 	. "github.com/qor5/x/v3/ui/vuetify"
+	vx "github.com/qor5/x/v3/ui/vuetifyx"
 	"github.com/sunfmin/reflectutils"
 	h "github.com/theplant/htmlgo"
 	"gorm.io/gorm"
+
+	"github.com/qor5/admin/v3/presets"
+	"github.com/qor5/admin/v3/presets/actions"
+	"github.com/qor5/admin/v3/publish"
 )
 
 const (
-	AddContainerEvent                = "page_builder_AddContainerEvent"
-	DeleteContainerConfirmationEvent = "page_builder_DeleteContainerConfirmationEvent"
-	DeleteContainerEvent             = "page_builder_DeleteContainerEvent"
-	MoveContainerEvent               = "page_builder_MoveContainerEvent"
-	MoveUpDownContainerEvent         = "page_builder_MoveUpDownContainerEvent"
-	ToggleContainerVisibilityEvent   = "page_builder_ToggleContainerVisibilityEvent"
-	MarkAsSharedContainerEvent       = "page_builder_MarkAsSharedContainerEvent"
-	RenameContainerDialogEvent       = "page_builder_RenameContainerDialogEvent"
-	RenameContainerEvent             = "page_builder_RenameContainerEvent"
-	ShowSortedContainerDrawerEvent   = "page_builder_ShowSortedContainerDrawerEvent"
-	ReloadRenderPageOrTemplateEvent  = "page_builder_ReloadRenderPageOrTemplateEvent"
-	AutoSaveContainerEvent           = "page_builder_AutoSaveContainerEvent"
+	AddContainerEvent                   = "page_builder_AddContainerEvent"
+	DeleteContainerConfirmationEvent    = "page_builder_DeleteContainerConfirmationEvent"
+	DeleteContainerEvent                = "page_builder_DeleteContainerEvent"
+	MoveContainerEvent                  = "page_builder_MoveContainerEvent"
+	MoveUpDownContainerEvent            = "page_builder_MoveUpDownContainerEvent"
+	ToggleContainerVisibilityEvent      = "page_builder_ToggleContainerVisibilityEvent"
+	MarkAsSharedContainerEvent          = "page_builder_MarkAsSharedContainerEvent"
+	RenameContainerDialogEvent          = "page_builder_RenameContainerDialogEvent"
+	RenameContainerEvent                = "page_builder_RenameContainerEvent"
+	ShowSortedContainerDrawerEvent      = "page_builder_ShowSortedContainerDrawerEvent"
+	ReloadRenderPageOrTemplateEvent     = "page_builder_ReloadRenderPageOrTemplateEvent"
+	ReloadRenderPageOrTemplateBodyEvent = "page_builder_ReloadRenderPageOrTemplateBodyEvent"
+	ContainerPreviewEvent               = "page_builder_ContainerPreviewEvent"
+	ReplicateContainerEvent             = "page_builder_ReplicateContainerEvent"
+	EditContainerEvent                  = "page_builder_EditContainerEvent"
+	UpdateContainerEvent                = "page_builder_UpdateContainerEvent"
 
 	paramPageID          = "pageID"
 	paramPageVersion     = "pageVersion"
 	paramLocale          = "locale"
 	paramStatus          = "status"
 	paramContainerID     = "containerID"
+	paramContainerUri    = "containerUri"
 	paramContainerDataID = "containerDataID"
+	paramIsUpdate        = "isUpdate"
 	paramMoveResult      = "moveResult"
 	paramContainerName   = "containerName"
 	paramSharedContainer = "sharedContainer"
 	paramModelID         = "modelID"
 	paramModelName       = "modelName"
 	paramMoveDirection   = "moveDirection"
-	paramsTpl            = "tpl"
-	paramsDevice         = "device"
-	paramsDisplayName    = "DisplayName"
-	paramTab             = "tab"
+	paramDevice          = "device"
+	paramDisplayName     = "DisplayName"
+	paramDemoContainer   = "demoContainer"
 
 	DevicePhone    = "phone"
 	DeviceTablet   = "tablet"
 	DeviceComputer = "computer"
 
-	EventUp          = "up"
-	EventDown        = "down"
-	EventDelete      = "delete"
-	EventAdd         = "add"
-	EventEdit        = "edit"
-	iframeHeightName = "_iframeHeight"
-
-	EditorTabElements = "Elements"
-	EditorTabLayers   = "Layers"
+	EventUp     = "up"
+	EventDown   = "down"
+	EventDelete = "delete"
+	EventAdd    = "add"
+	EventEdit   = "edit"
 )
 
-const editorPreviewContentPortal = "editorPreviewContentPortal"
+const (
+	editorPreviewContentPortal      = "editorPreviewContentPortal"
+	addContainerDialogPortal        = "addContainerDialogPortal"
+	addContainerDialogContentPortal = "addContainerDialogContentPortal"
+)
+
+func (b *Builder) emptyEdit(ctx *web.EventContext) h.HTMLComponent {
+	msgr := i18n.MustGetModuleMessages(ctx.R, I18nPageBuilderKey, Messages_en_US).(*Messages)
+
+	return VLayout(
+		VAppBar(
+			VToolbarTitle("").Children(h.Text(msgr.Settings)),
+		).Elevation(0),
+		VSpacer(),
+		VMain(
+			VSheet(
+				VCard(
+					VCardText(
+						h.Text(msgr.SelectElementMsg),
+					),
+				).Variant(VariantFlat),
+			).Class("pa-2")),
+	)
+}
 
 func (b *Builder) Editor(m *ModelBuilder) web.PageFunc {
 	return func(ctx *web.EventContext) (r web.PageResponse, err error) {
 		var (
-			deviceToggler, versionComponent      h.HTMLComponent
+			deviceToggle, versionComponent       h.HTMLComponent
 			editContainerDrawer, navigatorDrawer h.HTMLComponent
 			tabContent                           web.PageResponse
 			pageAppbarContent                    []h.HTMLComponent
 			exitHref                             string
-			readonly                             bool
+			isStag                               bool
 
-			containerDataID = ctx.R.FormValue(paramContainerDataID)
-			obj             = m.mb.NewModel()
+			containerDataID = ctx.Param(paramContainerDataID)
+			obj             interface{}
+			msgr            = i18n.MustGetModuleMessages(ctx.R, I18nPageBuilderKey, Messages_en_US).(*Messages)
+			title           string
 		)
+		if m.mb.Info().Verifier().Do(presets.PermGet).WithReq(ctx.R).IsAllowed() != nil {
+			r.Body = h.Text(perm.PermissionDenied.Error())
+			return
+		}
+		if obj, err = m.pageBuilderModel(ctx); err != nil {
+			return
+		}
 
-		if containerDataID != "" {
-			arr := strings.Split(containerDataID, "_")
-			if len(arr) >= 2 {
-				editEvent := web.GET().EventFunc(actions.Edit).
-					URL(fmt.Sprintf(`%s/%s`, b.prefix, arr[0])).
-					Query(presets.ParamID, arr[1]).
-					Query(presets.ParamPortalName, pageBuilderRightContentPortal).
-					Query(presets.ParamOverlay, actions.Content).Go()
-				editContainerDrawer = web.RunScript(fmt.Sprintf(`function(){%s}`, editEvent))
-			}
+		if m.tb == nil {
+			title = msgr.PageBuilder
+			exitHref = m.mb.Info().DetailingHref(ctx.Param(presets.ParamID))
+		} else {
+			title = msgr.PageTemplate
+			exitHref = m.mb.Info().ListingHref()
 
 		}
-		deviceToggler = b.deviceToggle(ctx)
-		if tabContent, err = m.pageContent(ctx, obj); err != nil {
+		if containerDataID != "" {
+			editEvent := web.Plaid().
+				EventFunc(EditContainerEvent).
+				MergeQuery(true).
+				Query(paramContainerDataID, containerDataID).
+				Query(presets.ParamPortalName, pageBuilderRightContentPortal).
+				Query(presets.ParamOverlay, actions.Content).Go()
+			editContainerDrawer = web.RunScript(fmt.Sprintf(`function(){%s}`, editEvent))
+		} else {
+			editContainerDrawer = b.emptyEdit(ctx)
+		}
+		deviceToggle = b.deviceToggle(ctx)
+		if tabContent, err = m.pageContent(ctx); err != nil {
 			return
 		}
 		if p, ok := obj.(publish.StatusInterface); ok {
 			ctx.R.Form.Set(paramStatus, p.EmbedStatus().Status)
-			readonly = p.EmbedStatus().Status == publish.StatusDraft
+			isStag = p.EmbedStatus().Status == publish.StatusOnline || p.EmbedStatus().Status == publish.StatusOffline
 		}
-		versionComponent = publish.DefaultVersionComponentFunc(m.editor, publish.VersionComponentConfig{Top: true})(obj, &presets.FieldContext{ModelInfo: m.editor.Info()}, ctx)
-		exitHref = m.mb.Info().DetailingHref(ctx.Param(presets.ParamID))
+		if !isStag && m.mb.Info().Verifier().Do(presets.PermUpdate).WithReq(ctx.R).IsAllowed() != nil {
+			isStag = true
+		}
+		afterLeaveEvent := removeVirtualElement()
+		addOverlay := web.Scope(
+			h.Div().Style("display:none").Attr("v-on-mounted", `({watch})=>{
+					watch(() => vars.overlay, (value) => {
+						if(value){xLocals.add=false;}
+						})
+				}`),
+			vx.VXOverlay(
+				m.newContainerContent(ctx),
+			).
+				MaxWidth(665).
+				Attr("ref", "overlay").
+				Attr("@after-leave", fmt.Sprintf("if (!xLocals.add){%s}", afterLeaveEvent)).
+				Attr("v-model", "vars.overlay"),
+		).VSlot("{locals:xLocals}").Init("{add:false}")
+		versionComponent = publish.DefaultVersionComponentFunc(m.editor, publish.VersionComponentConfig{Top: true, DisableListeners: true, DisableDataChangeTracking: true})(obj, &presets.FieldContext{ModelInfo: m.editor.Info()}, ctx)
 		pageAppbarContent = h.Components(
 			h.Div(
-				h.Div(VIcon("mdi-exit-to-app").
-					Attr("@click", web.Plaid().URL(exitHref).PushState(true).Go())).Style("transform:rotateY(180deg)").Class("mr-4"),
-				VAppBarTitle().Text("Page Builder"),
+				h.Div().Style("transform:rotateY(180deg)").Class("mr-4").Children(
+					VIcon("mdi-exit-to-app").Attr("@click", fmt.Sprintf(`
+						const last = vars.__history.last();
+						if (last && last.url && last.url === %q) {
+							$event.view.window.history.back();
+							return;
+						}
+						%s`, exitHref, web.GET().URL(exitHref).PushState(true).Go(),
+					)),
+				),
+				VAppBarTitle().Text(title),
 			).Class("d-inline-flex align-center"),
-			h.Div(deviceToggler).Class("text-center  w-25 d-flex justify-space-between ml-8"),
+			h.Div(deviceToggle).Class("text-center d-flex justify-space-between mx-6"),
 			versionComponent,
+			publish.NewListenerModelsDeleted(m.mb, ctx.Param(presets.ParamID)),
+			publish.NewListenerVersionSelected(ctx, m.editor, ctx.Param(presets.ParamID)),
 		)
 		if navigatorDrawer, err = b.renderNavigator(ctx, m); err != nil {
 			return
 		}
 		r.Body = h.Components(
+			h.Div().Style("display:none").
+				Attr("v-on-unmounted", fmt.Sprintf(`({window})=>{
+				vars.$pbRightDrawerOnMouseLeave = null
+				vars.$pbRightDrawerOnMouseDown = null
+				vars.$pbRightDrawerOnMouseMove = null
+				window.removeEventListener('resize', vars.$PagebuilderResizeFn)
+				vars.$PagebuilderResizeFn = null
+				vars.$pbRightThrottleTimer = null
+			}`)).
+				Attr("v-on-mounted", fmt.Sprintf(`({ref, window, computed})=>{
+				const rightDrawerExpendMinWidth = 350 + 56 // 56 is the width of the gap, 390 is the actual size
+				const leftDrawerExpendMinWidth = 350
+
+				vars.$pbLeftDrawerFolded = window.localStorage.getItem("$pbLeftDrawerFolded") === '1'
+				vars.$pbRightDrawerFolded = window.localStorage.getItem("$pbRightDrawerFolded") === '1'
+				vars.$pbLeftDrawerWidth = computed(()=>vars.$pbLeftDrawerFolded ? 32 : leftDrawerExpendMinWidth)
+				vars.$pbRightAdjustableWidth = +window.localStorage.getItem("$pbRightAdjustableWidth") || rightDrawerExpendMinWidth
+				vars.$pbRightDrawerWidth = computed(()=>vars.$pbRightDrawerFolded ? 32 : vars.$pbRightAdjustableWidth)
+				vars.$pbLeftIconName = computed(()=> vars.$pbLeftDrawerFolded ? "mdi-chevron-right": "mdi-chevron-left")
+				vars.$pbRightIconName = computed(()=> vars.$pbRightDrawerFolded ? "mdi-chevron-left": "mdi-chevron-right")
+				vars.$pbRightDrawerHighlight = false
+				vars.$pbRightDrawerIsDragging = false
+				vars.$window = window
+				vars.$pbRightThrottleTimer = null
+
+				vars.$PagebuilderResizeFn = () => {
+					if(vars.$pbRightDrawerFolded) return
+					
+					if(vars.$pbRightThrottleTimer) return
+
+					vars.$pbRightThrottleTimer = window.setTimeout(() => {
+						const halfWindowWidth = window.innerWidth / 2
+						vars.$pbRightThrottleTimer = null
+						if((vars.$pbRightDrawerWidth > halfWindowWidth) && (vars.$pbRightDrawerWidth > rightDrawerExpendMinWidth)) {
+						vars.$pbRightAdjustableWidth =  halfWindowWidth
+					} 
+						window.localStorage.setItem("$pbRightAdjustableWidth", vars.$pbRightAdjustableWidth)
+					},300)
+				}
+
+				vars.$PagebuilderResizeFn()
+				window.addEventListener('resize', vars.$PagebuilderResizeFn)
+
+				function addInlineStyle(css) {
+					const style = window.document.createElement('style');
+					style.type = 'text/css';
+					style.appendChild(window.document.createTextNode(css));
+					window.document.head.appendChild(style);
+				}
+				
+				addInlineStyle(".event-none{pointer-events:none}");
+
+				const $body = window.document.querySelector("body")
+				const borderWidth = 5
+				const draggableEl = ref(null)
+
+				vars.$pbRightDrawerRefGet = (el) => {
+					if(!el) return
+					draggableEl.value = el.parentElement?.parentElement || el.parentElement
+				}
+
+				function isOnLeftBorder(event) {
+					const rect = draggableEl.value.getBoundingClientRect()
+					const x = event.clientX - rect.left
+					// console.log(event.clientX,rect.left, event.clientX - rect.left)
+
+					return x <= borderWidth
+				}
+				
+				function onMouseMove(event) {
+					if (vars.$pbRightDrawerIsDragging) {
+						if (animationFrameId) return;
+						animationFrameId = window.requestAnimationFrame(() => {
+							const rect = draggableEl.value.getBoundingClientRect();
+							const dx = rect.right - event.clientX;
+							const minWidth = rightDrawerExpendMinWidth; 
+							const maxWidth = window.innerWidth / 2;
+
+							const newWidth = Math.min(Math.max(dx, minWidth), maxWidth);
+							if (vars.$pbRightAdjustableWidth !== newWidth) {
+								vars.$pbRightAdjustableWidth = newWidth;
+							}
+
+							animationFrameId = null;
+						});
+					}
+				}
+
+				function onMouseUp () {
+					vars.$pbRightDrawerIsDragging = false
+					vars.$pbRightDrawerHighlight = false
+					$body.classList.remove('event-none')
+					window.localStorage.setItem("$pbRightAdjustableWidth", vars.$pbRightAdjustableWidth)
+					window.removeEventListener("mousemove", onMouseMove);
+      		window.removeEventListener("mouseup", onMouseUp);
+				}
+
+				vars.$pbRightDrawerOnMouseDown = (event) => {
+					if(vars.$pbRightDrawerFolded) return
+
+					if (isOnLeftBorder(event)) {
+						vars.$pbRightDrawerIsDragging = true
+						event.preventDefault()
+						$body.classList.add('event-none')
+						 window.addEventListener("mousemove", onMouseMove, {passive:true, capture:true});
+      			 window.addEventListener("mouseup", onMouseUp, {capture:true});
+					}
+
+					if(vars.$pbRightDrawerIsDragging) {
+						vars.$pbRightDrawerHighlight = true
+					}
+				}
+
+				vars.$pbRightDrawerOnMouseLeave = (event) => {
+					if(vars.$pbRightDrawerIsDragging) return
+					vars.$pbRightDrawerHighlight = false
+				}
+
+				vars.$pbRightDrawerOnMouseMove = (event) => {
+					if(vars.$pbRightDrawerFolded || vars.$pbRightDrawerIsDragging) return
+
+					vars.$pbRightDrawerHighlight = isOnLeftBorder(event)
+				}
+			}`)),
 			VAppBar(
 				h.Div(
 					pageAppbarContent...,
-				).Class("d-flex align-center  justify-space-between  w-100 px-6").Style("height: 36px"),
+				).Class("page-builder-edit-bar-wrap"),
 			).Elevation(0).Density(DensityCompact).Height(96).Class("align-center border-b"),
-			h.If(readonly,
+			h.If(!isStag,
 				VNavigationDrawer(
-					navigatorDrawer,
+					h.Div(
+						web.Portal(navigatorDrawer).Name(pageBuilderLayerContainerPortal),
+					).Attr("v-show", "!vars.$pbLeftDrawerFolded"),
+					web.Slot(
+						VBtn("").
+							Attr("v-if", "locals.isLeftBtnHovering").
+							Attr(":icon", "vars.$pbLeftIconName").
+							Attr("@click.stop", `() => {
+										vars.$pbLeftDrawerFolded = !vars.$pbLeftDrawerFolded
+										vars.$window.localStorage.setItem("$pbLeftDrawerFolded", vars.$pbLeftDrawerFolded ? "1": "0")
+									}`).
+							Size(SizeSmall).
+							Class("pb-drawer-btn drawer-btn-left")).
+						Name("append"),
 				).Location(LocationLeft).
 					Permanent(true).
-					Width(350),
+					Attr(":width", "vars.$pbLeftDrawerWidth").
+					Attr("@mouseover", "locals.isLeftBtnHovering = true").
+					Attr("@mouseout", "locals.isLeftBtnHovering = false").
+					Attr(web.VAssign("locals", "{isLeftBtnHovering: false}")...),
 				VNavigationDrawer(
-					web.Portal(editContainerDrawer).Name(pageBuilderRightContentPortal),
+					h.Div().Style("display:none").Attr("v-on-mounted", fmt.Sprintf(`({el,window}) => {
+							el.__handleScroll = (event) => {
+								locals.__pageBuilderRightContentScrollTop = event.target.scrollTop;
+							}
+							el.parentElement.addEventListener('scroll', el.__handleScroll)
+	
+							locals.__pageBuilderRightContentKeepScroll = () => {
+							const scrollTop = locals.__pageBuilderRightContentScrollTop;
+							window.setTimeout(()=>{
+  							el.parentElement.scrollTop = scrollTop;	
+							},0)							}
+						}`)).Attr("v-on-unmounted", `({el}) => {
+							el.parentElement.removeEventListener('scroll', el.__handleScroll);
+						}`),
+					web.Slot(
+						VBtn("").
+							Attr("v-if", "!vars.$pbRightDrawerIsDragging && locals.isRightBtnHovering").
+							Attr(":icon", "vars.$pbRightIconName").
+							Attr("@mousemove.stop", "()=>{vars.$pbRightDrawerHighlight=false}").
+							Attr("@mousedown.stop", "()=>{vars.$pbRightDrawerHighlight=false}").
+							Attr("@click", `() => {
+									vars.$pbRightDrawerFolded = !vars.$pbRightDrawerFolded
+									vars.$window.localStorage.setItem("$pbRightDrawerFolded", vars.$pbRightDrawerFolded ? "1": "0")
+								}`).
+							Size(SizeSmall).
+							Class("pb-drawer-btn drawer-btn-right")).
+						Name("append"),
+					h.Div(
+						web.Portal(editContainerDrawer).Name(pageBuilderRightContentPortal),
+					).Attr("v-show", "!vars.$pbRightDrawerFolded").Attr(":ref", "vars.$pbRightDrawerRefGet"),
 				).Location(LocationRight).
 					Permanent(true).
-					Width(350),
+					Attr(":class", "['draggable-el',{'border-left-draggable-highlight': vars.$pbRightDrawerHighlight}]").
+					Attr(":width", "vars.$pbRightDrawerWidth").
+					Attr("@mousedown", "vars.$pbRightDrawerOnMouseDown").
+					Attr("@mousemove", "vars.$pbRightDrawerOnMouseMove").
+					Attr("@mouseleave", "vars.$pbRightDrawerOnMouseLeave").
+					Attr("@mouseover", "locals.isRightBtnHovering = true").
+					Attr("@mouseout", "locals.isRightBtnHovering = false").
+					Attr(web.VAssign("locals", "{isRightBtnHovering: false}")...),
 			),
 			VMain(
+				addOverlay,
 				vx.VXMessageListener().ListenFunc(b.generateEditorBarJsFunction(ctx)),
 				tabContent.Body.(h.HTMLComponent),
-			),
+			).Attr(web.VAssign("vars", "{overlayEl:$}")...).Class("ma-2"),
 		)
+		r.PageTitle = m.mb.Info().Label()
 		return
 	}
 }
 
 func (b *Builder) getDevice(ctx *web.EventContext) (device string, style string) {
-	device = ctx.R.FormValue(paramsDevice)
+	device = ctx.R.FormValue(paramDevice)
 	if len(device) == 0 {
 		device = b.defaultDevice
 	}
@@ -155,21 +400,22 @@ func (b *Builder) getDevice(ctx *web.EventContext) (device string, style string)
 	return
 }
 
-const ContainerToPageLayoutKey = "ContainerToPageLayout"
+type CtxKeyContainerToPageLayout struct{}
 
 type ContainerSorterItem struct {
-	Index          int    `json:"index"`
-	Label          string `json:"label"`
-	ModelName      string `json:"model_name"`
-	ModelID        string `json:"model_id"`
-	DisplayName    string `json:"display_name"`
-	ContainerID    string `json:"container_id"`
-	URL            string `json:"url"`
-	Shared         bool   `json:"shared"`
-	Hidden         bool   `json:"hidden"`
-	VisibilityIcon string `json:"visibility_icon"`
-	ParamID        string `json:"param_id"`
-	Locale         string `json:"locale"`
+	Index           int    `json:"index"`
+	Label           string `json:"label"`
+	ModelName       string `json:"model_name"`
+	ModelID         string `json:"model_id"`
+	DisplayName     string `json:"display_name"`
+	ContainerID     string `json:"container_id"`
+	ContainerDataID string `json:"container_data_id"`
+	URL             string `json:"url"`
+	Shared          bool   `json:"shared"`
+	Hidden          bool   `json:"hidden"`
+	VisibilityIcon  string `json:"visibility_icon"`
+	ParamID         string `json:"param_id"`
+	Locale          string `json:"locale"`
 }
 
 type ContainerSorter struct {
@@ -177,191 +423,8 @@ type ContainerSorter struct {
 }
 
 func (b *Builder) renderNavigator(ctx *web.EventContext, m *ModelBuilder) (r h.HTMLComponent, err error) {
-	tab := ctx.Param(paramTab)
-	if tab == "" {
-		tab = EditorTabElements
-	}
-
-	var listContainers h.HTMLComponent
-	if tab == EditorTabLayers {
-		if listContainers, err = m.renderContainersSortedList(ctx); err != nil {
-			return
-		}
-	}
-	r = h.Components(
-		web.Slot(
-			VTabs(
-				VTab().Text("Add").
-					Value(EditorTabElements).Attr("@click",
-					web.Plaid().PushState(true).MergeQuery(true).
-						Query(paramTab, EditorTabElements).RunPushState()),
-				VTab().Text("Layers").Value(EditorTabLayers).Attr("@click",
-					web.Plaid().PushState(true).MergeQuery(true).
-						Query(paramTab, EditorTabLayers).RunPushState()+
-						";"+
-						web.Plaid().
-							URL(ctx.R.URL.Path).
-							EventFunc(ShowSortedContainerDrawerEvent).
-							Query(paramStatus, ctx.Param(paramStatus)).
-							MergeQuery(true).
-							Go()),
-			).Attr("v-model", "vars.containerTab").FixedTabs(true),
-		).Name(VSlotPrepend),
-		VTabsWindow(
-			VTabsWindowItem(m.renderContainersList(ctx)).Value(EditorTabElements),
-			VTabsWindowItem(web.Portal(listContainers).Name(pageBuilderLayerContainerPortal)).Value(EditorTabLayers),
-		).Attr("v-model", "vars.containerTab").Attr(web.VAssign("vars", fmt.Sprintf(`{containerTab:"%s"}`, tab))...),
-	)
-	return
-}
-
-func (b *Builder) renderEditContainer(ctx *web.EventContext) (r h.HTMLComponent, err error) {
-	var (
-		modelName     = ctx.R.FormValue(paramModelName)
-		containerName = ctx.R.FormValue(paramContainerName)
-		modelID       = ctx.R.FormValue(paramModelID)
-	)
-	builder := b.ContainerByName(modelName).GetModelBuilder()
-	element := builder.NewModel()
-	if err = b.db.First(element, modelID).Error; err != nil {
+	if r, err = m.renderContainersSortedList(ctx); err != nil {
 		return
-	}
-	r = web.Scope(
-		VLayout(
-			VMain(
-				h.Div(
-					h.Span(containerName).Class("text-subtitle-1"),
-					h.Div(
-						VBtn("Save").Variant(VariantFlat).Color(ColorSecondary).Size(SizeSmall).Attr("@click", web.Plaid().
-							EventFunc(actions.Update).
-							URL(b.ContainerByName(modelName).mb.Info().ListingHref()).
-							Query(presets.ParamID, modelID).
-							Go()),
-					),
-				).Class("d-flex  pa-6 align-center justify-space-between"),
-				VDivider(),
-				h.Div(
-
-					builder.Editing().ToComponent(builder.Info(), element, ctx),
-				).Class("pa-6"),
-			),
-		),
-	).VSlot("{ form }")
-	return
-}
-
-func (b *Builder) copyContainersToNewPageVersion(db *gorm.DB, pageID int, locale, oldPageVersion, newPageVersion string) (err error) {
-	return b.copyContainersToAnotherPage(db, pageID, oldPageVersion, locale, pageID, newPageVersion, locale)
-}
-
-func (b *Builder) copyContainersToAnotherPage(db *gorm.DB, pageID int, pageVersion, locale string, toPageID int, toPageVersion, toPageLocale string) (err error) {
-	var cons []*Container
-	err = db.Order("display_order ASC").Find(&cons, "page_id = ? AND page_version = ? AND locale_code = ?", pageID, pageVersion, locale).Error
-	if err != nil {
-		return
-	}
-
-	for _, c := range cons {
-		newModelID := c.ModelID
-		if !c.Shared {
-			model := b.ContainerByName(c.ModelName).NewModel()
-			if err = db.First(model, "id = ?", c.ModelID).Error; err != nil {
-				return
-			}
-			if err = reflectutils.Set(model, "ID", uint(0)); err != nil {
-				return
-			}
-			if err = db.Create(model).Error; err != nil {
-				return
-			}
-			newModelID = reflectutils.MustGet(model, "ID").(uint)
-		}
-
-		if err = db.Create(&Container{
-			PageID:       uint(toPageID),
-			PageVersion:  toPageVersion,
-			ModelName:    c.ModelName,
-			DisplayName:  c.DisplayName,
-			ModelID:      newModelID,
-			DisplayOrder: c.DisplayOrder,
-			Shared:       c.Shared,
-			Locale: l10n.Locale{
-				LocaleCode: toPageLocale,
-			},
-		}).Error; err != nil {
-			return
-		}
-	}
-	return
-}
-
-func (b *Builder) localizeContainersToAnotherPage(db *gorm.DB, pageID int, pageVersion, locale string, toPageID int, toPageVersion, toPageLocale string) (err error) {
-	var cons []*Container
-	err = db.Order("display_order ASC").Find(&cons, "page_id = ? AND page_version = ? AND locale_code = ?", pageID, pageVersion, locale).Error
-	if err != nil {
-		return
-	}
-
-	for _, c := range cons {
-		newModelID := c.ModelID
-		newDisplayName := c.DisplayName
-		if !c.Shared {
-			model := b.ContainerByName(c.ModelName).NewModel()
-			if err = db.First(model, "id = ?", c.ModelID).Error; err != nil {
-				return
-			}
-			if err = reflectutils.Set(model, "ID", uint(0)); err != nil {
-				return
-			}
-			if err = db.Create(model).Error; err != nil {
-				return
-			}
-			newModelID = reflectutils.MustGet(model, "ID").(uint)
-		} else {
-			var count int64
-			var sharedCon Container
-			if err = db.Where("model_name = ? AND localize_from_model_id = ? AND locale_code = ? AND shared = ?", c.ModelName, c.ModelID, toPageLocale, true).First(&sharedCon).Count(&count).Error; err != nil && err != gorm.ErrRecordNotFound {
-				return
-			}
-
-			if count == 0 {
-				model := b.ContainerByName(c.ModelName).NewModel()
-				if err = db.First(model, "id = ?", c.ModelID).Error; err != nil {
-					return
-				}
-				if err = reflectutils.Set(model, "ID", uint(0)); err != nil {
-					return
-				}
-				if err = db.Create(model).Error; err != nil {
-					return
-				}
-				newModelID = reflectutils.MustGet(model, "ID").(uint)
-			} else {
-				newModelID = sharedCon.ModelID
-				newDisplayName = sharedCon.DisplayName
-			}
-		}
-
-		var newCon Container
-		err = db.Order("display_order ASC").Find(&newCon, "id = ? AND locale_code = ?", c.ID, toPageLocale).Error
-		if err != nil {
-			return
-		}
-
-		newCon.ID = c.ID
-		newCon.PageID = uint(toPageID)
-		newCon.PageVersion = toPageVersion
-		newCon.ModelName = c.ModelName
-		newCon.DisplayName = newDisplayName
-		newCon.ModelID = newModelID
-		newCon.DisplayOrder = c.DisplayOrder
-		newCon.Shared = c.Shared
-		newCon.LocaleCode = toPageLocale
-		newCon.LocalizeFromModelID = c.ModelID
-
-		if err = db.Save(&newCon).Error; err != nil {
-			return
-		}
 	}
 	return
 }
@@ -444,9 +507,18 @@ func (b *Builder) pageEditorLayout(in web.PageFunc, config *presets.LayoutConfig
 			web.Portal().Name(presets.DeleteConfirmPortalName),
 			web.Portal().Name(presets.ListingDialogPortalName),
 			web.Portal().Name(dialogPortalName),
+			web.Portal().Name(addContainerDialogPortal),
+			h.Template(
+				VSnackbar(
+					h.Div().Style("white-space: pre-wrap").Text("{{vars.presetsMessage.message}}"),
+				).
+					Attr("v-model", "vars.presetsMessage.show").
+					Attr(":color", "vars.presetsMessage.color").
+					Timeout(1000),
+			).Attr("v-if", "vars.presetsMessage"),
 			innerPr.Body.(h.HTMLComponent),
 		).Attr("id", "vt-app").
-			Attr(web.VAssign("vars", `{presetsRightDrawer: false, presetsDialog: false, dialogPortalName: false}`)...)
+			Attr(web.VAssign("vars", fmt.Sprintf(`{presetsRightDrawer: false, presetsDialog: false, dialogPortalName: false,overlay:false,containerPreview:false,%s:{},presetsMessage: {show: false, color: "", message: ""},pageBuilderContentScroll:{}}`, presets.VarsPresetsDataChanged))...)
 		return
 	}
 }
@@ -456,7 +528,6 @@ func scrollToContainer(containerDataID interface{}) string {
 }
 
 func (b *Builder) containerWrapper(r *h.HTMLTagBuilder, ctx *web.EventContext, isEditor, isReadonly, isFirst, isEnd bool, containerDataID, modelName string, input *RenderInput) h.HTMLComponent {
-	r.Attr("data-container-id", containerDataID)
 	pmb := postMessageBody{
 		ContainerDataID: containerDataID,
 		ContainerId:     input.ContainerId,
@@ -469,11 +540,11 @@ func (b *Builder) containerWrapper(r *h.HTMLTagBuilder, ctx *web.EventContext, i
 		if isReadonly {
 			r.AppendChildren(h.Div().Class("wrapper-shadow"))
 		} else {
-			r.AppendChildren(h.Div().Class("inner-shadow"))
 			r = h.Div(
-				r.Attr("onclick", "event.stopPropagation();document.querySelectorAll('.highlight').forEach(item=>{item.classList.remove('highlight')});this.parentElement.classList.add('highlight');"+pmb.postMessage(EventEdit)),
+				h.Div().Class("inner-shadow"),
+				h.Div(h.Div(r).Class("inner-container")).Attr("onclick", "event.stopPropagation();document.querySelectorAll('.highlight').forEach(item=>{item.classList.remove('highlight')});this.parentElement.classList.add('highlight');"+pmb.postMessage(EventEdit)),
 				h.Div(
-					h.H6(input.DisplayName).Class("title"),
+					h.Div(h.Text(input.DisplayName)).Class("title"),
 					h.Div(
 						h.Button("").Children(h.I("arrow_upward").Class("material-icons")).Attr("onclick", pmb.postMessage(EventUp)),
 						h.Button("").Children(h.I("arrow_downward").Class("material-icons")).Attr("onclick", pmb.postMessage(EventDown)),
@@ -487,6 +558,7 @@ func (b *Builder) containerWrapper(r *h.HTMLTagBuilder, ctx *web.EventContext, i
 			).Class("wrapper-shadow").ClassIf("highlight", ctx.Param(paramContainerDataID) == containerDataID)
 		}
 	}
+	r.Attr("data-container-id", containerDataID)
 	return r
 }
 
@@ -510,5 +582,21 @@ func (b *postMessageBody) postMessage(msgType string) string {
 		return ""
 	}
 	b.MsgType = msgType
-	return fmt.Sprintf(`window.parent.postMessage(%s, '*')`, h.JSONString(b))
+	return fmt.Sprintf(`
+const {top, left, width, height} = event.target.getBoundingClientRect();
+const data= %s;
+data.rect = {top, left, width, height}
+window.parent.postMessage(data, '*')`, h.JSONString(b))
+}
+
+func addVirtualELeToContainer(containerDataID interface{}) string {
+	return fmt.Sprintf(`vars.el.refs.scrollIframe.addVirtualElement(%v);`, containerDataID)
+}
+
+func removeVirtualElement() string {
+	return fmt.Sprintf(`vars.el.refs.scrollIframe.removeVirtualElement();`)
+}
+
+func appendVirtualElement() string {
+	return fmt.Sprintf(`vars.el.refs.scrollIframe.appendVirtualElement();`)
 }
