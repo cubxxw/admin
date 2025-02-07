@@ -2,18 +2,21 @@ package publish
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 	"time"
 
-	"github.com/qor5/admin/v3/presets"
-	"github.com/qor5/admin/v3/presets/actions"
-	"github.com/qor5/admin/v3/utils"
 	"github.com/qor5/web/v3"
 	"github.com/qor5/x/v3/i18n"
+	"github.com/qor5/x/v3/perm"
 	v "github.com/qor5/x/v3/ui/vuetify"
 	vx "github.com/qor5/x/v3/ui/vuetifyx"
 	"github.com/samber/lo"
 	h "github.com/theplant/htmlgo"
 	"gorm.io/gorm"
+
+	"github.com/qor5/admin/v3/presets"
+	"github.com/qor5/admin/v3/utils"
 )
 
 const (
@@ -28,21 +31,21 @@ func ScheduleTimeString(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
-	return t.Format(timeFormatSchedule)
+	return t.Local().Format(timeFormatSchedule)
 }
 
-func schedulePublishDialog(_ *gorm.DB, mb *presets.ModelBuilder) web.EventFunc {
+func scheduleDialog(_ *gorm.DB, mb *presets.ModelBuilder) web.EventFunc {
 	return func(ctx *web.EventContext) (r web.EventResponse, err error) {
+		slug := ctx.Param(presets.ParamID)
 		obj := mb.NewModel()
+		obj, err = mb.Editing().Fetcher(obj, slug, ctx)
+		if err != nil {
+			return r, err
+		}
+
 		sc, ok := obj.(ScheduleInterface)
 		if !ok {
 			return r, errInvalidObject
-		}
-
-		slug := ctx.Param(presets.ParamID)
-		obj, err = mb.Editing().Fetcher(obj, slug, ctx)
-		if err != nil {
-			return
 		}
 
 		valStartAt := ScheduleTimeString(sc.EmbedSchedule().ScheduledStartAt)
@@ -51,58 +54,66 @@ func schedulePublishDialog(_ *gorm.DB, mb *presets.ModelBuilder) web.EventFunc {
 		displayStartAtPicker := EmbedStatus(sc).Status != StatusOnline
 		msgr := i18n.MustGetModuleMessages(ctx.R, I18nPublishKey, Messages_en_US).(*Messages)
 		cmsgr := i18n.MustGetModuleMessages(ctx.R, presets.CoreI18nModuleKey, Messages_en_US).(*presets.Messages)
+		maxWidthStr := lo.If(displayStartAtPicker, "480").Else("280")
+		maxWidth, err := strconv.Atoi(maxWidthStr)
+		if err != nil {
+			panic("convert string to int error")
+		}
+
 		r.UpdatePortals = append(r.UpdatePortals, &web.PortalUpdate{
 			Name: PortalSchedulePublishDialog,
 			Body: web.Scope().VSlot("{locals}").Init("{schedulePublishDialog:true}").Children(
-				v.VDialog().Attr("v-model", "locals.schedulePublishDialog").MaxWidth(lo.If(displayStartAtPicker, "480px").Else("280px")).Children(
-					v.VCard().Children(
-						v.VCardTitle().Children(
-							h.Text(msgr.SchedulePublishTime),
-						),
-						v.VCardText().Children(
-							v.VRow().Class("justify-center").Children(
-								h.If(displayStartAtPicker, v.VCol().Children(
-									vx.VXDateTimePicker().Attr(web.VField(fieldScheduledStartAt, valStartAt)...).Label(msgr.ScheduledStartAt).
-										TimePickerProps(vx.TimePickerProps{Format: "24hr", Scrollable: true}).
-										ClearText(msgr.DateTimePickerClearText).OkText(msgr.DateTimePickerOkText),
-								)),
-								v.VCol().Children(
-									vx.VXDateTimePicker().Attr(web.VField(fieldScheduledEndAt, valEndAt)...).Label(msgr.ScheduledEndAt).
-										TimePickerProps(vx.TimePickerProps{Format: "24hr", Scrollable: true}).
-										ClearText(msgr.DateTimePickerClearText).OkText(msgr.DateTimePickerOkText),
-								),
-							),
-						),
-						v.VCardActions().Children(
-							v.VSpacer(),
-							v.VBtn(cmsgr.Cancel).
-								Variant(v.VariantFlat).
-								On("click", "locals.schedulePublishDialog = false"),
-							v.VBtn(cmsgr.Update).Color("primary").Attr(":disabled", "isFetching").Attr(":loading", "isFetching").
-								On("click", web.Plaid().
-									EventFunc(eventSchedulePublish).
-									Query(presets.ParamID, slug).
-									URL(mb.Info().ListingHref()).
-									Go(),
-								),
+				vx.VXDialog(
+					v.VRow().Class("justify-center").Children(
+						h.If(displayStartAtPicker, v.VCol().Children(
+							vx.VXDatepicker().Type("datetimepicker").
+								Format("YYYY-MM-DD HH:mm").
+								Clearable(true).
+								Attr(web.VField(fieldScheduledStartAt, valStartAt)...).
+								Label(msgr.ScheduledStartAt),
+						)),
+						v.VCol().Children(
+							vx.VXDatepicker().Type("datetimepicker").
+								Format("YYYY-MM-DD HH:mm").
+								Clearable(true).
+								Attr(web.VField(fieldScheduledEndAt, valEndAt)...).
+								Label(msgr.ScheduledEndAt),
 						),
 					),
-				),
+				).Attr("v-model", "locals.schedulePublishDialog").
+					Title(msgr.SchedulePublishTime).
+					ContentHeight(108).
+					CancelText(cmsgr.Cancel).
+					OkText(cmsgr.Update).
+					Attr(":disable-ok", "isFetching").
+					Attr("@click:ok", fmt.Sprintf(`({isLoading}) => {
+						isLoading.value = isFetching;
+						%s
+					}`, web.Plaid().EventFunc(eventSchedulePublish).Query(presets.ParamID, slug).URL(mb.Info().ListingHref()).Go())).
+					MaxWidth(maxWidth),
 			),
 		})
 		return
 	}
 }
 
-func schedulePublish(db *gorm.DB, mb *presets.ModelBuilder) web.EventFunc {
-	return wrapEventFuncWithShowError(func(ctx *web.EventContext) (web.EventResponse, error) {
-		var r web.EventResponse
+func schedule(db *gorm.DB, mb *presets.ModelBuilder) web.EventFunc {
+	return func(ctx *web.EventContext) (r web.EventResponse, err error) {
+		defer func() {
+			if err != nil {
+				presets.ShowMessage(&r, err.Error(), "error")
+				err = nil
+			}
+		}()
 
 		slug := ctx.Param(presets.ParamID)
 		obj := mb.NewModel()
-		obj, err := mb.Editing().Fetcher(obj, slug, ctx)
+		obj, err = mb.Editing().Fetcher(obj, slug, ctx)
 		if err != nil {
 			return r, err
+		}
+		if DeniedDo(mb.Info().Verifier(), obj, ctx.R, PermPublish, PermUnpublish, PermSchedule) {
+			return r, perm.PermissionDenied
 		}
 
 		sc, ok := obj.(ScheduleInterface)
@@ -118,11 +129,12 @@ func schedulePublish(db *gorm.DB, mb *presets.ModelBuilder) web.EventFunc {
 		}
 
 		web.AppendRunScripts(&r, "locals.schedulePublishDialog = false")
-		if mb.HasDetailing() && mb.Detailing().GetDrawer() {
-			web.AppendRunScripts(&r, web.Plaid().EventFunc(actions.ReloadList).Go())
-		}
+		r.Emit(mb.NotifModelsUpdated(), presets.PayloadModelsUpdated{
+			Ids:    []string{slug},
+			Models: map[string]any{slug: obj},
+		})
 		return r, nil
-	})
+	}
 }
 
 func parseScheduleTimeValue(val string) (*time.Time, error) {

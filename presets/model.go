@@ -9,22 +9,27 @@ import (
 
 	"github.com/iancoleman/strcase"
 	"github.com/jinzhu/inflection"
-	"github.com/qor5/admin/v3/presets/actions"
 	"github.com/qor5/web/v3"
+	"github.com/qor5/x/v3/i18n"
 	"github.com/qor5/x/v3/perm"
+	h "github.com/theplant/htmlgo"
+
+	"github.com/qor5/admin/v3/presets/actions"
 )
 
 type ModelBuilder struct {
 	p                   *Builder
-	model               interface{}
+	model               any
 	primaryField        string
 	modelType           reflect.Type
-	menuGroupName       string
+	verifier            func() *perm.Verifier
 	notInMenu           bool
 	menuIcon            string
+	menuItem            func(evCtx *web.EventContext, isSub bool) (h.HTMLComponent, error)
 	uriName             string
 	defaultURLQueryFunc func(*http.Request) url.Values
 	label               string
+	labelNameFunc       func(evCtx *web.EventContext, singular bool) string
 	fieldLabels         []string
 	placeholders        []string
 	listing             *ListingBuilder
@@ -39,11 +44,13 @@ type ModelBuilder struct {
 	modelInfo           *ModelInfo
 	singleton           bool
 	plugins             []ModelPlugin
+	mustGetMessages     func(r *http.Request) *Messages
 	web.EventsHub
 }
 
 func NewModelBuilder(p *Builder, model interface{}) (mb *ModelBuilder) {
 	mb = &ModelBuilder{p: p, model: model, primaryField: "ID"}
+	mb.verifier = mb.defaultVerifier
 	mb.modelType = reflect.TypeOf(model)
 	if mb.modelType.Kind() != reflect.Ptr {
 		panic(fmt.Sprintf("model %#+v must be pointer", model))
@@ -53,12 +60,17 @@ func NewModelBuilder(p *Builder, model interface{}) (mb *ModelBuilder) {
 	mb.label = strcase.ToCamel(inflection.Plural(modelName))
 	mb.uriName = inflection.Plural(strcase.ToKebab(modelName))
 	mb.modelInfo = &ModelInfo{mb: mb}
+	mb.menuItem = mb.DefaultMenuItem(nil)
 	// Be aware the uriName here is still the original struct
 	mb.newListing()
 	mb.newDetailing()
 	mb.newEditing()
-
+	mb.mustGetMessages = mb.defaultMustGetMessages
 	return
+}
+
+func (mb *ModelBuilder) GetPresetsBuilder() *Builder {
+	return mb.p
 }
 
 func (mb *ModelBuilder) HasDetailing() bool {
@@ -67,6 +79,16 @@ func (mb *ModelBuilder) HasDetailing() bool {
 
 func (mb *ModelBuilder) GetSingleton() bool {
 	return mb.singleton
+}
+
+func (mb *ModelBuilder) MustGetMessages(in func(r *http.Request) *Messages) *ModelBuilder {
+	mb.mustGetMessages = in
+	return mb
+}
+
+func (mb *ModelBuilder) WrapMustGetMessages(w func(func(r *http.Request) *Messages) func(r *http.Request) *Messages) *ModelBuilder {
+	mb.mustGetMessages = w(mb.mustGetMessages)
+	return mb
 }
 
 func (mb *ModelBuilder) RightDrawerWidth(v string) *ModelBuilder {
@@ -79,30 +101,23 @@ func (mb *ModelBuilder) Link(v string) *ModelBuilder {
 	return mb
 }
 
+func (mb *ModelBuilder) LabelName(f func(evCtx *web.EventContext, singular bool) string) *ModelBuilder {
+	mb.labelNameFunc = f
+	return mb
+}
+
 func (mb *ModelBuilder) registerDefaultEventFuncs() {
 	mb.RegisterEventFunc(actions.New, mb.editing.formNew)
 	mb.RegisterEventFunc(actions.Edit, mb.editing.formEdit)
-	mb.RegisterEventFunc(actions.DeleteConfirmation, mb.listing.deleteConfirmation)
+	mb.RegisterEventFunc(actions.Validate, mb.editing.doValidate)
 	mb.RegisterEventFunc(actions.Update, mb.editing.defaultUpdate)
 	mb.RegisterEventFunc(actions.DoDelete, mb.editing.doDelete)
-	mb.RegisterEventFunc(actions.DoBulkAction, mb.listing.doBulkAction)
-	mb.RegisterEventFunc(actions.DoListingAction, mb.listing.doListingAction)
-	mb.RegisterEventFunc(actions.OpenBulkActionDialog, mb.listing.openBulkActionDialog)
-	mb.RegisterEventFunc(actions.OpenActionDialog, mb.listing.openActionDialog)
 
-	mb.RegisterEventFunc(actions.Action, mb.detailing.formDrawerAction)
+	mb.RegisterEventFunc(actions.Action, mb.detailing.openActionDialog)
 	mb.RegisterEventFunc(actions.DoAction, mb.detailing.doAction)
 	mb.RegisterEventFunc(actions.DetailingDrawer, mb.detailing.showInDrawer)
-	mb.RegisterEventFunc(actions.DoSaveDetailingField, mb.detailing.SaveDetailField)
-	mb.RegisterEventFunc(actions.DoEditDetailingField, mb.detailing.EditDetailField)
-	mb.RegisterEventFunc(actions.DoEditDetailingListField, mb.detailing.EditDetailListField)
-	mb.RegisterEventFunc(actions.DoSaveDetailingListField, mb.detailing.SaveDetailListField)
-	mb.RegisterEventFunc(actions.DoDeleteDetailingListField, mb.detailing.DeleteDetailListField)
-	mb.RegisterEventFunc(actions.DoCreateDetailingListField, mb.detailing.CreateDetailListField)
-
-	mb.RegisterEventFunc(actions.ReloadList, mb.listing.reloadList)
+	mb.RegisterEventFunc(actions.DeleteConfirmation, mb.listing.deleteConfirmation)
 	mb.RegisterEventFunc(actions.OpenListingDialog, mb.listing.openListingDialog)
-	mb.RegisterEventFunc(actions.UpdateListingDialog, mb.listing.updateListingDialog)
 
 	// list editor
 	mb.RegisterEventFunc(actions.AddRowEvent, addListItemRow(mb))
@@ -128,8 +143,12 @@ func (mb *ModelBuilder) newListing() (lb *ListingBuilder) {
 	}
 
 	rmb := mb.listing.RowMenu()
-	// rmb.RowMenuItem("Edit").ComponentFunc(editRowMenuItemFunc(mb.Info(), "", url.Values{}))
-	rmb.RowMenuItem("Delete").ComponentFunc(deleteRowMenuItemFunc(mb.Info(), "", url.Values{}))
+	// rmb.RowMenuItem("Edit").ComponentFunc(func(obj interface{}, id string, ctx *web.EventContext) h.HTMLComponent {
+	// 	return editRowMenuItemFunc(mb.Info(), mb.Info().ListingHref(), url.Values{})(obj, id, ctx)
+	// })
+	rmb.RowMenuItem("Delete").ComponentFunc(func(obj interface{}, id string, ctx *web.EventContext) h.HTMLComponent {
+		return deleteRowMenuItemFunc(mb.Info(), mb.Info().ListingHref(), url.Values{})(obj, id, ctx)
+	})
 	return
 }
 
@@ -146,11 +165,8 @@ func (mb *ModelBuilder) newEditing() (r *EditingBuilder) {
 
 func (mb *ModelBuilder) newDetailing() (r *DetailingBuilder) {
 	mb.detailing = &DetailingBuilder{
-		mb: mb,
-		SectionsBuilder: SectionsBuilder{
-			mb:            mb,
-			FieldsBuilder: *mb.p.detailFieldDefaults.InspectFields(mb.model),
-		},
+		mb:            mb,
+		FieldsBuilder: *mb.p.detailFieldDefaults.InspectFields(mb.model),
 	}
 	if mb.p.dataOperator != nil {
 		mb.detailing.FetchFunc(mb.p.dataOperator.Fetch)
@@ -198,12 +214,29 @@ func (b ModelInfo) Label() string {
 	return b.mb.label
 }
 
-func (b ModelInfo) Verifier() *perm.Verifier {
-	v := b.mb.p.verifier.Spawn()
-	if b.mb.menuGroupName != "" {
-		v.SnakeOn("mg_" + b.mb.menuGroupName)
+func (b ModelInfo) LabelName(evCtx *web.EventContext, singular bool) string {
+	if b.mb.labelNameFunc != nil {
+		return b.mb.labelNameFunc(evCtx, singular)
 	}
-	return v.SnakeOn(b.mb.uriName)
+	key := b.mb.label
+	if singular {
+		key = inflection.Singular(key)
+	}
+	return i18n.T(evCtx.R, ModelsI18nModuleKey, key)
+}
+
+func (mb *ModelBuilder) defaultVerifier() *perm.Verifier {
+	v := mb.p.verifier.Spawn()
+	return v.SnakeOn(mb.uriName)
+}
+
+func (mb *ModelBuilder) WrapVerifier(w func(in func() *perm.Verifier) func() *perm.Verifier) *ModelBuilder {
+	mb.verifier = w(mb.defaultVerifier)
+	return mb
+}
+
+func (b ModelInfo) Verifier() *perm.Verifier {
+	return b.mb.verifier()
 }
 
 func (mb *ModelBuilder) URIName(v string) (r *ModelBuilder) {
@@ -228,6 +261,11 @@ func (mb *ModelBuilder) InMenu(v bool) (r *ModelBuilder) {
 
 func (mb *ModelBuilder) MenuIcon(v string) (r *ModelBuilder) {
 	mb.menuIcon = v
+	return mb
+}
+
+func (mb *ModelBuilder) MenuItem(v func(evCtx *web.EventContext, isSub bool) (h.HTMLComponent, error)) (r *ModelBuilder) {
+	mb.menuItem = v
 	return mb
 }
 
@@ -277,4 +315,14 @@ func (mb *ModelBuilder) getLabel(field NameLabel) (r string) {
 	}
 
 	return humanizeString(field.name)
+}
+
+func (mb *ModelBuilder) defaultMustGetMessages(r *http.Request) *Messages {
+	messages := &Messages{}
+	srcVal := reflect.ValueOf(MustGetMessages(r)).Elem()
+	dstVal := reflect.ValueOf(messages).Elem()
+	for i := 0; i < srcVal.NumField(); i++ {
+		dstVal.Field(i).Set(srcVal.Field(i))
+	}
+	return messages
 }

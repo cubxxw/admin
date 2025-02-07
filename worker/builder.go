@@ -12,8 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/qor5/admin/v3/activity"
-	"github.com/qor5/admin/v3/presets"
 	"github.com/qor5/web/v3"
 	"github.com/qor5/x/v3/i18n"
 	"github.com/qor5/x/v3/perm"
@@ -22,6 +20,9 @@ import (
 	. "github.com/theplant/htmlgo"
 	"golang.org/x/text/language"
 	"gorm.io/gorm"
+
+	"github.com/qor5/admin/v3/activity"
+	"github.com/qor5/admin/v3/presets"
 )
 
 type Builder struct {
@@ -135,7 +136,7 @@ var permVerifier *perm.Verifier
 func (b *Builder) Install(pb *presets.Builder) error {
 	b.pb = pb
 	permVerifier = perm.NewVerifier("workers", pb.GetPermission())
-	pb.I18n().
+	pb.GetI18n().
 		RegisterForModule(language.English, I18nWorkerKey, Messages_en_US).
 		RegisterForModule(language.SimplifiedChinese, I18nWorkerKey, Messages_zh_CN)
 
@@ -264,7 +265,7 @@ func (b *Builder) Install(pb *presets.Builder) error {
 			return err
 		}
 		if b.ab != nil {
-			b.ab.AddRecords(activity.ActivityCreate, ctx.R.Context(), j)
+			b.ab.OnCreate(ctx.R.Context(), j)
 		}
 		return
 	})
@@ -341,14 +342,14 @@ func (b *Builder) Install(pb *presets.Builder) error {
 	})
 
 	if b.ab != nil {
-		b.ab.RegisterModel(mb).SkipCreate().SkipUpdate().SkipDelete().
+		b.ab.RegisterModel(mb).SkipCreate().SkipEdit().SkipDelete().
 			AddTypeHanders(time.Time{}, func(old, now interface{}, prefixField string) []activity.Diff {
 				fm := "2006-01-02 15:04:05"
 				oldString := old.(time.Time).Format(fm)
 				nowString := now.(time.Time).Format(fm)
 				if oldString != nowString {
 					return []activity.Diff{
-						{Field: prefixField, Old: oldString, Now: nowString},
+						{Field: prefixField, Old: oldString, New: nowString},
 					}
 				}
 				return []activity.Diff{}
@@ -359,7 +360,7 @@ func (b *Builder) Install(pb *presets.Builder) error {
 				nowString := now.(Schedule).ScheduleTime.Format(fm)
 				if oldString != nowString {
 					return []activity.Diff{
-						{Field: prefixField, Old: oldString, Now: nowString},
+						{Field: prefixField, Old: oldString, New: nowString},
 					}
 				}
 				return []activity.Diff{}
@@ -435,7 +436,7 @@ func (b *Builder) createJob(ctx *web.EventContext, qorJob *QorJob) (j *QorJob, e
 			Job:    qorJob.Job,
 			Status: JobStatusNew,
 		}
-		err = b.db.Create(j).Error
+		err = tx.Create(j).Error
 		if err != nil {
 			return err
 		}
@@ -504,11 +505,11 @@ func (b *Builder) eventAbortJob(ctx *web.EventContext) (er web.EventResponse, er
 		if isScheduled {
 			action = "Cancel"
 		}
-		b.ab.AddCustomizedRecord(action, false, ctx.R.Context(), &QorJob{
+		b.ab.Log(ctx.R.Context(), action, &QorJob{
 			Model: gorm.Model{
 				ID: inst.QorJobID,
 			},
-		})
+		}, nil)
 	}
 
 	return er, nil
@@ -569,11 +570,11 @@ func (b *Builder) eventRerunJob(ctx *web.EventContext) (er web.EventResponse, er
 	er.RunScript = "vars.worker_updateJobProgressingInterval = 2000"
 
 	if b.ab != nil {
-		b.ab.AddCustomizedRecord("Rerun", false, ctx.R.Context(), &QorJob{
+		b.ab.Log(ctx.R.Context(), "Rerun", &QorJob{
 			Model: gorm.Model{
 				ID: inst.QorJobID,
 			},
-		})
+		}, nil)
 	}
 	return
 }
@@ -637,7 +638,7 @@ func (b *Builder) eventUpdateJob(ctx *web.EventContext) (er web.EventResponse, e
 	er.Reload = true
 	er.RunScript = "vars.worker_updateJobProgressingInterval = 2000"
 	if b.ab != nil {
-		b.ab.AddEditRecordWithOldAndContext(
+		b.ab.OnEdit(
 			ctx.R.Context(),
 			&QorJob{
 				Model: gorm.Model{

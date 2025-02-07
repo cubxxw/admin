@@ -1,13 +1,9 @@
 package admin
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 
-	"github.com/qor5/admin/v3/note"
 	"github.com/qor5/admin/v3/role"
-	"github.com/qor5/x/v3/login"
 	"gorm.io/gorm"
 )
 
@@ -44,51 +40,6 @@ func securityMiddleware() func(next http.Handler) http.Handler {
 			w.Header().Add("Pragma", "no-cache")
 
 			next.ServeHTTP(w, req)
-		})
-	}
-}
-
-func withNoteContext() func(next http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			u := getCurrentUser(r)
-			if u == nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-			ctx := context.WithValue(r.Context(), note.UserIDKey, u.ID)
-			ctx = context.WithValue(ctx, note.UserKey, fmt.Sprintf("%v (%v)", u.Name, u.Account))
-			newR := r.WithContext(ctx)
-
-			next.ServeHTTP(w, newR)
-		})
-	}
-}
-
-func validateSessionToken(db *gorm.DB) func(next http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			user := getCurrentUser(r)
-			if user == nil {
-				next.ServeHTTP(w, r)
-				return
-			}
-			if login.IsLoginWIP(r) {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			valid, err := checkIsTokenValidFromRequest(db, r, user.ID)
-			if err != nil || !valid {
-				if r.URL.Path == logoutURL {
-					next.ServeHTTP(w, r)
-					return
-				}
-				http.Redirect(w, r, logoutURL, http.StatusFound)
-				return
-			}
-
-			next.ServeHTTP(w, r)
 		})
 	}
 }

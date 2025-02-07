@@ -1,8 +1,8 @@
 package examples_vuetifyx
 
 import (
-	"github.com/qor5/admin/v3/docs/docsrc/examples"
 	"github.com/qor5/web/v3"
+	"github.com/qor5/web/v3/examples"
 	. "github.com/qor5/x/v3/ui/vuetify"
 	"github.com/qor5/x/v3/ui/vuetifyx"
 )
@@ -40,7 +40,7 @@ func FilterDemo(ctx *web.EventContext) (pr web.PageResponse, err error) {
 		},
 	})
 
-	fd.SetByQueryString(ctx.R.URL.RawQuery)
+	fd.SetByQueryString(&web.EventContext{}, ctx.R.URL.RawQuery)
 
 	pr.Body = VApp(
 		VMain(

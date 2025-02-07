@@ -8,11 +8,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/qor5/admin/v3/presets/actions"
 	"github.com/qor5/web/v3"
 	. "github.com/qor5/x/v3/ui/vuetify"
 	"github.com/sunfmin/reflectutils"
 	h "github.com/theplant/htmlgo"
+
+	"github.com/qor5/admin/v3/presets/actions"
 )
 
 type ListEditorBuilder struct {
@@ -84,6 +85,8 @@ func (b *ListEditorBuilder) SortListItemsEvent(v string) (r *ListEditorBuilder) 
 
 func (b *ListEditorBuilder) MarshalHTML(c context.Context) (r []byte, err error) {
 	ctx := web.MustGetEventContext(c)
+	msgr := MustGetMessages(ctx.R)
+
 	formKey := b.fieldContext.FormKey
 	var form h.HTMLComponent
 	if b.value != nil {
@@ -95,6 +98,7 @@ func (b *ListEditorBuilder) MarshalHTML(c context.Context) (r []byte, err error)
 							URL(b.fieldContext.ModelInfo.ListingHref()).
 							EventFunc(b.removeListItemRowEvent).
 							Queries(ctx.Queries()).
+							Query(AddRowBtnKey(b.fieldContext.FormKey), "").
 							Query(ParamID, ctx.R.FormValue(ParamID)).
 							Query(ParamOverlay, ctx.R.FormValue(ParamOverlay)).
 							Query(ParamRemoveRowFormKey, formKey).
@@ -144,6 +148,8 @@ func (b *ListEditorBuilder) MarshalHTML(c context.Context) (r []byte, err error)
 				),
 			).Class("pa-0")).Variant(VariantOutlined).Class("mx-0 mt-1 mb-4")
 	}
+	addRowBtnId := fmt.Sprintf("%s_%s", b.fieldContext.FormKey, ctx.R.FormValue(ParamID))
+
 	return h.Div(
 		web.Scope(
 			h.If(!b.fieldContext.Disabled,
@@ -159,6 +165,7 @@ func (b *ListEditorBuilder) MarshalHTML(c context.Context) (r []byte, err error)
 										URL(b.fieldContext.ModelInfo.ListingHref()).
 										EventFunc(b.sortListItemsEvent).
 										Queries(ctx.Queries()).
+										Query(AddRowBtnKey(b.fieldContext.FormKey), "").
 										Query(ParamID, ctx.R.FormValue(ParamID)).
 										Query(ParamOverlay, ctx.R.FormValue(ParamOverlay)).
 										Query(ParamSortSectionFormKey, b.fieldContext.FormKey).
@@ -173,6 +180,7 @@ func (b *ListEditorBuilder) MarshalHTML(c context.Context) (r []byte, err error)
 										URL(b.fieldContext.ModelInfo.ListingHref()).
 										EventFunc(b.sortListItemsEvent).
 										Queries(ctx.Queries()).
+										Query(AddRowBtnKey(b.fieldContext.FormKey), "").
 										Query(ParamID, ctx.R.FormValue(ParamID)).
 										Query(ParamOverlay, ctx.R.FormValue(ParamOverlay)).
 										Query(ParamSortSectionFormKey, b.fieldContext.FormKey).
@@ -188,13 +196,15 @@ func (b *ListEditorBuilder) MarshalHTML(c context.Context) (r []byte, err error)
 			h.Div(
 				form,
 				h.If(!b.fieldContext.Disabled,
-					VBtn("Add row").
+					VBtn(msgr.AddRow).
 						Variant(VariantText).
 						Color("primary").
+						Attr("id", addRowBtnId).
 						Attr("@click", web.Plaid().
 							URL(b.fieldContext.ModelInfo.ListingHref()).
 							EventFunc(b.addListItemRowEvent).
 							Queries(ctx.Queries()).
+							Query(AddRowBtnKey(b.fieldContext.FormKey), addRowBtnId).
 							Query(ParamID, ctx.R.FormValue(ParamID)).
 							Query(ParamOverlay, ctx.R.FormValue(ParamOverlay)).
 							Query(ParamAddRowFormKey, b.fieldContext.FormKey).
@@ -210,8 +220,9 @@ func (b *ListEditorBuilder) MarshalHTML(c context.Context) (r []byte, err error)
 func addListItemRow(mb *ModelBuilder) web.EventFunc {
 	return func(ctx *web.EventContext) (r web.EventResponse, err error) {
 		me := mb.Editing()
-		obj, _ := me.FetchAndUnmarshal(ctx.R.FormValue(ParamID), false, ctx)
-		formKey := ctx.R.FormValue(ParamAddRowFormKey)
+		id := ctx.Param(ParamID)
+		obj, _ := me.FetchAndUnmarshal(id, false, ctx)
+		formKey := ctx.Param(ParamAddRowFormKey)
 		t := reflectutils.GetType(obj, formKey+"[0]")
 		newVal := reflect.New(t.Elem()).Interface()
 		err = reflectutils.Set(obj, formKey+"[]", newVal)
@@ -219,6 +230,7 @@ func addListItemRow(mb *ModelBuilder) web.EventFunc {
 			panic(err)
 		}
 		me.UpdateOverlayContent(ctx, &r, obj, "", nil)
+		web.AppendRunScripts(&r, fmt.Sprintf(`setTimeout(function(){%s},200)`, web.Emit(mb.NotifRowUpdated(), PayloadRowUpdated{Id: id})))
 		return
 	}
 }
@@ -226,7 +238,8 @@ func addListItemRow(mb *ModelBuilder) web.EventFunc {
 func removeListItemRow(mb *ModelBuilder) web.EventFunc {
 	return func(ctx *web.EventContext) (r web.EventResponse, err error) {
 		me := mb.Editing()
-		obj, _ := me.FetchAndUnmarshal(ctx.R.FormValue(ParamID), false, ctx)
+		id := ctx.Param(ParamID)
+		obj, _ := me.FetchAndUnmarshal(id, false, ctx)
 
 		formKey := ctx.R.FormValue(ParamRemoveRowFormKey)
 		lb := strings.LastIndex(formKey, "[")
@@ -240,7 +253,7 @@ func removeListItemRow(mb *ModelBuilder) web.EventFunc {
 		}
 		ContextModifiedIndexesBuilder(ctx).AppendDeleted(sliceField, index)
 		me.UpdateOverlayContent(ctx, &r, obj, "", nil)
-		r.RunScript = fmt.Sprintf(`form["%s"]=null;`, formKey)
+		web.AppendRunScripts(&r, fmt.Sprintf(`setTimeout(function(){%s},200)`, web.Emit(mb.NotifRowUpdated(), PayloadRowUpdated{Id: id})))
 		return
 	}
 }
@@ -248,7 +261,8 @@ func removeListItemRow(mb *ModelBuilder) web.EventFunc {
 func sortListItems(mb *ModelBuilder) web.EventFunc {
 	return func(ctx *web.EventContext) (r web.EventResponse, err error) {
 		me := mb.Editing()
-		obj, _ := me.FetchAndUnmarshal(ctx.R.FormValue(ParamID), false, ctx)
+		id := ctx.Param(ParamID)
+		obj, _ := me.FetchAndUnmarshal(id, false, ctx)
 		sortSectionFormKey := ctx.R.FormValue(ParamSortSectionFormKey)
 
 		isStartSort := ctx.R.FormValue(ParamIsStartSort)
@@ -264,10 +278,15 @@ func sortListItems(mb *ModelBuilder) web.EventFunc {
 			for _, i := range result {
 				indexes = append(indexes, fmt.Sprint(i.Index))
 			}
-			ContextModifiedIndexesBuilder(ctx).SetSorted(sortSectionFormKey, indexes)
+			ContextModifiedIndexesBuilder(ctx).Sorted(sortSectionFormKey, indexes)
+			web.AppendRunScripts(&r, fmt.Sprintf(`setTimeout(function(){%s},200)`, web.Emit(mb.NotifRowUpdated(), PayloadRowUpdated{Id: id})))
 		}
 
 		me.UpdateOverlayContent(ctx, &r, obj, "", nil)
 		return
 	}
+}
+
+func AddRowBtnKey(fromKey string) string {
+	return fmt.Sprintf("%sAddRowBtnID", fromKey)
 }

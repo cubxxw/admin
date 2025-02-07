@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"net/http"
@@ -10,41 +11,46 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3control"
-	"github.com/qor/oss"
-	"github.com/qor/oss/filesystem"
-	"github.com/qor/oss/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/iancoleman/strcase"
+	"github.com/pkg/errors"
+	"github.com/qor5/web/v3"
+	"github.com/qor5/x/v3/i18n"
+	"github.com/qor5/x/v3/login"
+	"github.com/qor5/x/v3/oss"
+	"github.com/qor5/x/v3/oss/filesystem"
+	"github.com/qor5/x/v3/oss/s3"
+	"github.com/qor5/x/v3/perm"
+	v "github.com/qor5/x/v3/ui/vuetify"
+	vx "github.com/qor5/x/v3/ui/vuetifyx"
+	"github.com/sunfmin/reflectutils"
+	h "github.com/theplant/htmlgo"
+	"github.com/theplant/osenv"
+	"golang.org/x/text/language"
+	"gorm.io/gorm"
+
 	"github.com/qor5/admin/v3/activity"
+	"github.com/qor5/admin/v3/autosync"
 	"github.com/qor5/admin/v3/example/models"
 	"github.com/qor5/admin/v3/l10n"
+	plogin "github.com/qor5/admin/v3/login"
 	"github.com/qor5/admin/v3/media"
 	"github.com/qor5/admin/v3/media/base"
 	"github.com/qor5/admin/v3/media/media_library"
 	media_oss "github.com/qor5/admin/v3/media/oss"
 	"github.com/qor5/admin/v3/microsite"
 	microsite_utils "github.com/qor5/admin/v3/microsite/utils"
-	"github.com/qor5/admin/v3/note"
 	"github.com/qor5/admin/v3/pagebuilder"
 	"github.com/qor5/admin/v3/pagebuilder/example"
 	"github.com/qor5/admin/v3/presets"
 	"github.com/qor5/admin/v3/presets/gorm2op"
 	"github.com/qor5/admin/v3/publish"
-	"github.com/qor5/admin/v3/richeditor"
+	"github.com/qor5/admin/v3/redirection"
 	"github.com/qor5/admin/v3/role"
-	"github.com/qor5/admin/v3/slug"
+	"github.com/qor5/admin/v3/seo"
+	"github.com/qor5/admin/v3/tiptap"
 	"github.com/qor5/admin/v3/utils"
 	"github.com/qor5/admin/v3/worker"
-	"github.com/qor5/web/v3"
-	"github.com/qor5/x/v3/i18n"
-	"github.com/qor5/x/v3/login"
-	"github.com/qor5/x/v3/perm"
-	v "github.com/qor5/x/v3/ui/vuetify"
-	vx "github.com/qor5/x/v3/ui/vuetifyx"
-	h "github.com/theplant/htmlgo"
-	"github.com/theplant/osenv"
-	"golang.org/x/text/language"
-	"gorm.io/gorm"
 )
 
 //go:embed assets
@@ -54,9 +60,18 @@ var assets embed.FS
 var PublishStorage oss.StorageInterface = filesystem.New("publish")
 
 type Config struct {
-	pb          *presets.Builder
-	pageBuilder *pagebuilder.Builder
-	Publisher   *publish.Builder
+	pb                  *presets.Builder
+	pageBuilder         *pagebuilder.Builder
+	Publisher           *publish.Builder
+	loginSessionBuilder *plogin.SessionBuilder
+}
+
+func (c *Config) GetPresetsBuilder() *presets.Builder {
+	return c.pb
+}
+
+func (c *Config) GetLoginSessionBuilder() *plogin.SessionBuilder {
+	return c.loginSessionBuilder
 }
 
 var (
@@ -66,17 +81,33 @@ var (
 	s3PublishBucket           = osenv.Get("S3_Publish_Bucket", "s3-bucket for publish", "example-publish")
 	s3PublishRegion           = osenv.Get("S3_Publish_Region", "s3-region for publish", "ap-northeast-1")
 	publishURL                = osenv.Get("PUBLISH_URL", "publish url", "")
-	awsRegion                 = osenv.Get("AWS_REGION", "aws region for show count down", "")
+	dbReset                   = osenv.Get("DB_RESET", "db reset for show count down", "")
 	resetAndImportInitialData = osenv.GetBool("RESET_AND_IMPORT_INITIAL_DATA",
 		"Will reset and import initial data if set to true", false)
 )
 
-func NewConfig(db *gorm.DB) Config {
+type ConfigOption func(opts *configOptions)
+
+type configOptions struct {
+	StorageWrapper func(oss.StorageInterface) oss.StorageInterface
+}
+
+func WithStorageWrapper(fn func(oss.StorageInterface) oss.StorageInterface) ConfigOption {
+	return func(opts *configOptions) {
+		opts.StorageWrapper = fn
+	}
+}
+
+func NewConfig(db *gorm.DB, enableWork bool, opts ...ConfigOption) Config {
+	options := &configOptions{}
+	for _, opt := range opts {
+		opt(options)
+	}
+
 	if err := db.AutoMigrate(
 		&models.Post{},
 		&models.InputDemo{},
 		&models.User{},
-		&models.LoginSession{},
 		&models.ListModel{},
 		&role.Role{},
 		&perm.DefaultDBPolicy{},
@@ -91,34 +122,66 @@ func NewConfig(db *gorm.DB) Config {
 		panic(err)
 	}
 
-	sess := session.Must(session.NewSession())
+	// @snippet_begin(ActivityExample)
+	ab := activity.New(db, func(ctx context.Context) (*activity.User, error) {
+		u := ctx.Value(login.UserKey).(*models.User)
+		return &activity.User{
+			ID:     fmt.Sprint(u.ID),
+			Name:   u.Name,
+			Avatar: "",
+		}, nil
+	}).
+		WrapLogModelInstall(func(in presets.ModelInstallFunc) presets.ModelInstallFunc {
+			return func(pb *presets.Builder, mb *presets.ModelBuilder) (err error) {
+				err = in(pb, mb)
+				if err != nil {
+					return
+				}
+				mb.Listing().WrapSearchFunc(func(in presets.SearchFunc) presets.SearchFunc {
+					return func(ctx *web.EventContext, params *presets.SearchParams) (result *presets.SearchResult, err error) {
+						u := getCurrentUser(ctx.R)
+						if rs := u.GetRoles(); !slices.Contains(rs, models.RoleAdmin) {
+							params.SQLConditions = append(params.SQLConditions, &presets.SQLCondition{
+								Query: "user_id = ?",
+								Args:  []interface{}{fmt.Sprint(u.ID)},
+							})
+						}
+						return in(ctx, params)
+					}
+				})
+				return
+			}
+		}).
+		TablePrefix("cms_").
+		AutoMigrate()
+
+	// ab.Model(l).SkipDelete().SkipCreate()
+	// @snippet_end
+
 	media_oss.Storage = s3.New(&s3.Config{
 		Bucket:   s3Bucket,
 		Region:   s3Region,
-		ACL:      s3control.S3CannedAccessControlListBucketOwnerFullControl,
+		ACL:      string(types.ObjectCannedACLBucketOwnerFullControl),
 		Endpoint: s3Endpoint,
-		Session:  sess,
 	})
-	PublishStorage = microsite_utils.NewClient(s3.New(&s3.Config{
+	s3Client := s3.New(&s3.Config{
 		Bucket:   s3PublishBucket,
 		Region:   s3PublishRegion,
-		ACL:      s3control.S3CannedAccessControlListBucketOwnerFullControl,
-		Session:  sess,
+		ACL:      string(types.ObjectCannedACLBucketOwnerFullControl),
 		Endpoint: publishURL,
-	}))
-	b := presets.New().RightDrawerWidth("700")
+	})
+	PublishStorage = microsite_utils.NewClient(s3Client)
+	if options.StorageWrapper != nil {
+		PublishStorage = options.StorageWrapper(PublishStorage)
+	}
+	b := presets.New().DataOperator(gorm2op.DataOperator(db)).RightDrawerWidth("700")
 	defer b.Build()
 
-	js, _ := assets.ReadFile("assets/fontcolor.min.js")
-	richeditor.Plugins = []string{"alignment", "table", "video", "imageinsert", "fontcolor"}
-	richeditor.PluginsJS = [][]byte{js}
-	b.ExtraAsset("/redactor.js", "text/javascript", richeditor.JSComponentsPack())
-	b.ExtraAsset("/redactor.css", "text/css", richeditor.CSSComponentsPack())
-	configBrand(b, db)
+	b.ExtraAsset("/tiptap.css", "text/css", tiptap.ThemeGithubCSSComponentsPack())
 
 	initPermission(b, db)
 
-	b.I18n().
+	b.GetI18n().
 		SupportLanguages(language.English, language.SimplifiedChinese, language.Japanese).
 		RegisterForModule(language.SimplifiedChinese, presets.ModelsI18nModuleKey, Messages_zh_CN_ModelsI18nModuleKey).
 		RegisterForModule(language.Japanese, presets.ModelsI18nModuleKey, Messages_ja_JP_ModelsI18nModuleKey).
@@ -138,62 +201,50 @@ func NewConfig(db *gorm.DB) Config {
 			//	}
 			// }
 			// return supportedLanguages
-			return b.I18n().GetSupportLanguages()
+			return b.GetI18n().GetSupportLanguages()
 		})
-	nb := note.New(db).AfterCreate(NoteAfterCreateFunc)
-	mediab := media.New(db)
+	mediab := media.New(db).AutoMigrate().Activity(ab).CurrentUserID(func(ctx *web.EventContext) (id uint) {
+		u := getCurrentUser(ctx.R)
+		if u == nil {
+			return
+		}
+		return u.ID
+	}).Searcher(func(db *gorm.DB, ctx *web.EventContext) *gorm.DB {
+		u := getCurrentUser(ctx.R)
+		if u == nil {
+			return db
+		}
+		if rs := u.GetRoles(); !slices.Contains(rs, models.RoleAdmin) && !slices.Contains(rs, models.RoleManager) {
+			return db.Where("user_id = ?", u.ID)
+		}
+		return db
+	})
+	defer func() {
+		mediab.GetPresetsModelBuilder().Use(ab)
+		seoBuilder.GetPresetsModelBuilder().Use(ab)
+	}()
 
 	l10nBuilder := l10n.New(db)
 	l10nBuilder.
-		RegisterLocales("International", "international", "International").
-		RegisterLocales("China", "cn", "China").
-		RegisterLocales("Japan", "jp", "Japan").
+		RegisterLocales("International", "international", "International", l10n.InternationalSvg).
+		RegisterLocales("China", "cn", "China", l10n.ChinaSvg).
+		RegisterLocales("Japan", "jp", "Japan", l10n.JapanSvg).
 		SupportLocalesFunc(func(R *http.Request) []string {
 			return l10nBuilder.GetSupportLocaleCodes()[:]
 		})
 	publisher := publish.New(db, PublishStorage).
 		ContextValueFuncs(l10nBuilder.ContextValueProvider)
-
+	redirectionBuilder := redirection.New(s3Client, db, publisher).AutoMigrate()
 	utils.Install(b)
 
-	// @snippet_begin(ActivityExample)
-	ab := activity.New(db).CreatorContextKey(login.UserKey).TabHeading(
-		func(log activity.ActivityLogInterface) string {
-			return fmt.Sprintf("%s %s at %s", log.GetCreator(), strings.ToLower(log.GetAction()), log.GetCreatedAt().Format("2006-01-02 15:04:05"))
-		}).
-		WrapLogModelInstall(func(in presets.ModelInstallFunc) presets.ModelInstallFunc {
-			return func(pb *presets.Builder, mb *presets.ModelBuilder) (err error) {
-				err = in(pb, mb)
-				if err != nil {
-					return
-				}
-				mb.Listing().SearchFunc(func(model interface{}, params *presets.SearchParams,
-					ctx *web.EventContext,
-				) (r interface{}, totalCount int, err error) {
-					u := getCurrentUser(ctx.R)
-					qdb := db
-					if rs := u.GetRoles(); !slices.Contains(rs, models.RoleAdmin) {
-						qdb = db.Where("user_id = ?", u.ID)
-					}
-					return gorm2op.DataOperator(qdb).Search(model, params, ctx)
-				})
-				return
-			}
-		})
-	b.Use(ab)
-
-	// ab.Model(m).EnableActivityInfoTab()
-	// ab.Model(pm).EnableActivityInfoTab()
-	// ab.Model(l).SkipDelete().SkipCreate()
-	// @snippet_end
+	publisher.Activity(ab)
 
 	// media_view.MediaLibraryPerPage = 3
 	// vips.UseVips(vips.Config{EnableGenerateWebp: true})
 	configureSeo(b, db, l10nBuilder.GetSupportLocaleCodes()...)
-
 	configMenuOrder(b)
 
-	configPost(b, db, ab, publisher, nb)
+	configPost(b, db, publisher, ab, seoBuilder)
 
 	roleBuilder := role.New(db).
 		Resources([]*v.DefaultOptionItem{
@@ -211,11 +262,7 @@ func NewConfig(db *gorm.DB) Config {
 			{Text: "Workers", Value: "*:workers:*"},
 		}).
 		AfterInstall(func(pb *presets.Builder, mb *presets.ModelBuilder) error {
-			mb.Listing().SearchFunc(func(
-				model interface{},
-				params *presets.SearchParams,
-				ctx *web.EventContext,
-			) (r interface{}, totalCount int, err error) {
+			mb.Listing().SearchFunc(func(ctx *web.EventContext, params *presets.SearchParams) (result *presets.SearchResult, err error) {
 				u := getCurrentUser(ctx.R)
 				qdb := db
 				// If the current user doesn't has 'admin' role, do not allow them to view admin and manager roles
@@ -223,15 +270,17 @@ func NewConfig(db *gorm.DB) Config {
 				if currentRoles := u.GetRoles(); !slices.Contains(currentRoles, models.RoleAdmin) {
 					qdb = db.Where("name NOT IN (?)", []string{models.RoleAdmin, models.RoleManager})
 				}
-				return gorm2op.DataOperator(qdb).Search(model, params, ctx)
+				return gorm2op.DataOperator(qdb).Search(ctx, params)
 			})
 			return nil
 		})
-
-	w := worker.New(db)
-	defer w.Listen()
-	addJobs(w)
-	configProduct(b, db, w, publisher)
+	if enableWork {
+		w := worker.New(db)
+		defer w.Listen()
+		addJobs(w)
+		configProduct(b, db, w, publisher)
+		b.Use(w.Activity(ab))
+	}
 	configCategory(b, db, publisher)
 
 	// Use m to customize the model, Or config more models here.
@@ -250,9 +299,7 @@ func NewConfig(db *gorm.DB) Config {
 
 	configNestedFieldDemo(b, db)
 
-	b.Use(w.Activity(ab))
-
-	pageBuilder := example.ConfigPageBuilder(db, "/page_builder", ``, b.I18n())
+	pageBuilder := example.ConfigPageBuilder(db, "/page_builder", ``, b)
 	pageBuilder.
 		Media(mediab).
 		L10n(l10nBuilder).
@@ -267,30 +314,31 @@ func NewConfig(db *gorm.DB) Config {
 				}
 				pmListing := pm.Listing()
 				pmListing.FilterDataFunc(func(ctx *web.EventContext) vx.FilterData {
-					u := getCurrentUser(ctx.R)
-					return []*vx.FilterItem{
-						{
-							Key:          "hasUnreadNotes",
-							Invisible:    true,
-							SQLCondition: fmt.Sprintf(hasUnreadNotesQuery, "page_builder_pages", "Pages", u.ID, "Pages"),
-						},
+					item, err := ab.MustGetModelBuilder(pm).NewHasUnreadNotesFilterItem(ctx.R.Context(), "")
+					if err != nil {
+						panic(err)
 					}
+					liveFilterItem, err := publish.NewLiveFilterItem(ctx.R.Context(), "")
+					if err != nil {
+						panic(err)
+					}
+					return []*vx.FilterItem{item, liveFilterItem}
 				})
 
 				pmListing.FilterTabsFunc(func(ctx *web.EventContext) []*presets.FilterTab {
 					msgr := i18n.MustGetModuleMessages(ctx.R, I18nExampleKey, Messages_en_US).(*Messages)
 
+					tab, err := ab.MustGetModelBuilder(pm).NewHasUnreadNotesFilterTab(ctx.R.Context())
+					if err != nil {
+						panic(err)
+					}
 					return []*presets.FilterTab{
 						{
 							Label: msgr.FilterTabsAll,
 							ID:    "all",
 							Query: url.Values{"all": []string{"1"}},
 						},
-						{
-							Label: msgr.FilterTabsHasUnreadNotes,
-							ID:    "hasUnreadNotes",
-							Query: url.Values{"hasUnreadNotes": []string{"1"}},
-						},
+						tab,
 					}
 				})
 				return nil
@@ -299,13 +347,7 @@ func NewConfig(db *gorm.DB) Config {
 
 	b.Use(pageBuilder)
 
-	configListModel(b, ab)
-
-	b.GetWebBuilder().RegisterEventFunc(noteMarkAllAsRead, markAllAsRead(db))
-
-	if err := db.AutoMigrate(&UserUnreadNote{}); err != nil {
-		panic(err)
-	}
+	configListModel(b, ab, publisher)
 
 	microb := microsite.New(db).Publisher(publisher)
 
@@ -314,25 +356,29 @@ func NewConfig(db *gorm.DB) Config {
 	l10nM.Use(l10nBuilder)
 	l10nVM.Use(l10nBuilder)
 
-	publisher.Activity(ab)
+	loginSessionBuilder := initLoginSessionBuilder(db, b, ab)
 
-	initLoginBuilder(db, b, ab)
+	configBrand(b)
+
+	profileBuilder := configProfile(db, ab, loginSessionBuilder)
 
 	configInputDemo(b, db)
 
 	configOrder(b, db)
 	configECDashboard(b, db)
+	configureDemoCase(b, db)
 
-	configUser(b, nb, db, publisher)
-	configProfile(b, db)
-
+	configUser(b, ab, db, publisher, loginSessionBuilder)
 	b.Use(
 		mediab,
 		microb,
-		nb,
+		ab,
 		publisher,
 		l10nBuilder,
 		roleBuilder,
+		loginSessionBuilder,
+		profileBuilder,
+		redirectionBuilder,
 	)
 
 	if resetAndImportInitialData {
@@ -342,49 +388,49 @@ func NewConfig(db *gorm.DB) Config {
 	}
 
 	return Config{
-		pb:          b,
-		pageBuilder: pageBuilder,
-		Publisher:   publisher,
+		pb:                  b,
+		pageBuilder:         pageBuilder,
+		Publisher:           publisher,
+		loginSessionBuilder: loginSessionBuilder,
 	}
 }
 
-func configListModel(b *presets.Builder, ab *activity.Builder) *presets.ModelBuilder {
-	l := b.Model(&models.ListModel{}).Use(ab)
+func configListModel(b *presets.Builder, ab *activity.Builder, publisher *publish.Builder) *presets.ModelBuilder {
+	mb := b.Model(&models.ListModel{})
+	defer mb.Use(ab, publisher)
 	{
-		l.Listing("ID", "Title", "Status")
-		ed := l.Editing("StatusBar", "ScheduleBar", "Title", "DetailPath", "ListPath")
-		ed.Field("DetailPath").ComponentFunc(
-			func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) (r h.HTMLComponent) {
-				this := obj.(*models.ListModel)
+		mb.Listing("ID", "Title", "Status")
+		mb.Editing("Title")
 
-				if this.Status.Status != publish.StatusOnline {
-					return nil
-				}
+		detailing := mb.Detailing(publish.VersionsPublishBar, "Title", "DetailPath", "ListPath").Drawer(true)
+		titleSection := presets.NewSectionBuilder(mb, "Title").Editing("Title")
+		detailPathSection := presets.NewSectionBuilder(mb, "DetailPath").
+			ComponentFunc(
+				func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) (r h.HTMLComponent) {
+					this := obj.(*models.ListModel)
 
-				var content []h.HTMLComponent
+					if this.Status.Status != publish.StatusOnline {
+						return nil
+					}
 
-				content = append(content,
-					h.Label(i18n.PT(ctx.R, presets.ModelsI18nModuleKey, l.Info().Label(), field.Label)).Class("v-label v-label--active theme--light").Style("left: 0px; right: auto; position: absolute;"),
-				)
-				domain := PublishStorage.GetEndpoint()
-				if this.OnlineUrl != "" {
-					p := this.OnlineUrl
-					content = append(content, h.A(h.Text(p)).Href(domain+p))
-				}
+					var content []h.HTMLComponent
 
-				return h.Div(
-					h.Div(
+					content = append(content,
+						h.Label(i18n.PT(ctx.R, presets.ModelsI18nModuleKey, mb.Info().Label(), field.Label)))
+					domain := PublishStorage.GetEndpoint(ctx.R.Context())
+					if this.OnlineUrl != "" {
+						p := this.OnlineUrl
+						content = append(content, h.A(h.Text(p)).Href(domain+p))
+					}
+
+					return h.Div(
 						h.Div(
-							content...,
-						).Class("v-text-field__slot").Style("padding: 8px 0;"),
-					).Class("v-input__slot"),
-				).Class("v-input v-input--is-label-active v-input--is-dirty theme--light v-text-field v-text-field--is-booted")
-			},
-		).SetterFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) (err error) {
-			return nil
-		})
-
-		ed.Field("ListPath").ComponentFunc(
+							h.Div(content...).Class("v-text-field__slot").Style("padding: 8px 0;"),
+						).Class("v-input__slot"),
+					).Class("v-input v-input--is-label-active v-input--is-dirty theme--light v-text-field v-text-field--is-booted")
+				},
+			)
+		listPathSection := presets.NewSectionBuilder(mb, "ListPath").ComponentFunc(
 			func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) (r h.HTMLComponent) {
 				this := obj.(*models.ListModel)
 
@@ -395,9 +441,8 @@ func configListModel(b *presets.Builder, ab *activity.Builder) *presets.ModelBui
 				var content []h.HTMLComponent
 
 				content = append(content,
-					h.Label(i18n.PT(ctx.R, presets.ModelsI18nModuleKey, l.Info().Label(), field.Label)).Class("v-label v-label--active theme--light").Style("left: 0px; right: auto; position: absolute;"),
-				)
-				domain := PublishStorage.GetEndpoint()
+					h.Label(i18n.PT(ctx.R, presets.ModelsI18nModuleKey, mb.Info().Label(), field.Label)))
+				domain := PublishStorage.GetEndpoint(ctx.R.Context())
 				if this.OnlineUrl != "" {
 					p := this.GetListUrl(strconv.Itoa(this.PageNumber))
 					content = append(content, h.A(h.Text(p)).Href(domain+p))
@@ -411,11 +456,10 @@ func configListModel(b *presets.Builder, ab *activity.Builder) *presets.ModelBui
 					).Class("v-input__slot"),
 				).Class("v-input v-input--is-label-active v-input--is-dirty theme--light v-text-field v-text-field--is-booted")
 			},
-		).SetterFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) (err error) {
-			return nil
-		})
+		)
+		detailing.Section(titleSection, detailPathSection, listPathSection)
 	}
-	return l
+	return mb
 }
 
 func configMenuOrder(b *presets.Builder) {
@@ -444,6 +488,7 @@ func configMenuOrder(b *presets.Builder) {
 		).Icon("mdi-account-multiple"),
 		b.MenuGroup("Featured Models Management").SubItems(
 			"InputDemo",
+			"DemoCase",
 			"Post",
 			"qor-seo-settings",
 			"List Editor Example",
@@ -458,7 +503,70 @@ func configMenuOrder(b *presets.Builder) {
 	)
 }
 
-func configBrand(b *presets.Builder, db *gorm.DB) {
+func configProfile(db *gorm.DB, ab *activity.Builder, lsb *plogin.SessionBuilder) *plogin.ProfileBuilder {
+	return plogin.NewProfileBuilder(
+		func(ctx context.Context) (*plogin.Profile, error) {
+			evCtx := web.MustGetEventContext(ctx)
+			u := getCurrentUser(evCtx.R)
+			if u == nil {
+				return nil, perm.PermissionDenied
+			}
+			notifiCounts, err := ab.GetNotesCounts(ctx, "", nil)
+			if err != nil {
+				return nil, err
+			}
+			user := &plogin.Profile{
+				ID:   fmt.Sprint(u.ID),
+				Name: u.Name,
+				// Avatar: "",
+				Roles:  u.GetRoles(),
+				Status: strcase.ToCamel(u.Status),
+				Fields: []*plogin.ProfileField{
+					{Name: "Email", Value: u.Account},
+					{Name: "Company", Value: u.Company},
+				},
+				NotifCounts: notifiCounts,
+			}
+			if u.OAuthAvatar != "" {
+				user.Avatar = u.OAuthAvatar
+			}
+			return user, nil
+		},
+		func(ctx context.Context, newName string) error {
+			evCtx := web.MustGetEventContext(ctx)
+			u := getCurrentUser(evCtx.R)
+			if u == nil {
+				return perm.PermissionDenied
+			}
+			u.Name = newName
+			if err := db.Save(u).Error; err != nil {
+				return errors.Wrap(err, "failed to update user name")
+			}
+			return nil
+		},
+	).SessionBuilder(lsb) // .DisableNotification(true).LogoutURL(lsb.GetLoginBuilder().LogoutURL)
+	// 		CustomizeButtons(func(ctx context.Context, buttons ...h.HTMLComponent) ([]h.HTMLComponent, error) {
+	// 	evCtx := web.MustGetEventContext(ctx)
+	// 	u := getCurrentUser(evCtx.R)
+	// 	if u == nil {
+	// 		return nil, perm.PermissionDenied
+	// 	}
+	// 	if u.GetAccountName() == loginInitialUserEmail {
+	// 		return buttons, nil
+	// 	}
+	// 	msgr := i18n.MustGetModuleMessages(evCtx.R, I18nExampleKey, Messages_en_US).(*Messages)
+	// 	return slices.Concat([]h.HTMLComponent{
+	// 		v.VBtn(msgr.ChangePassword).Variant(v.VariantTonal).Color(v.ColorSecondary).OnClick(plogin.OpenChangePasswordDialogEvent),
+	// 	}, buttons), nil
+	// }).
+	// PrependCompos(func(ctx context.Context, profileCompo *plogin.ProfileCompo) ([]h.HTMLComponent, error) {
+	// 	return []h.HTMLComponent{
+	// 		web.Listen(presets.NotifModelsUpdated(&models.User{}), stateful.ReloadAction(ctx, profileCompo, nil).Go()),
+	// 	}, nil
+	// })
+}
+
+func configBrand(b *presets.Builder) {
 	b.BrandFunc(func(ctx *web.EventContext) h.HTMLComponent {
 		msgr := i18n.MustGetModuleMessages(ctx.R, I18nExampleKey, Messages_en_US).(*Messages)
 		logo := "https://qor5.com/img/qor-logo.png"
@@ -477,7 +585,7 @@ func configBrand(b *presets.Builder, db *gorm.DB) {
 				v.VCol(h.H1(msgr.Demo)).Class("pt-4"),
 			),
 			// ).Density(DensityCompact),
-			h.If(awsRegion != "",
+			h.If(dbReset != "",
 				h.Div(
 					h.Span(msgr.DBResetTipLabel),
 					v.VIcon("schedule").Size(v.SizeXSmall),
@@ -488,48 +596,41 @@ func configBrand(b *presets.Builder, db *gorm.DB) {
 				h.Script("function updateCountdown(){const now=new Date();const nextEvenHour=new Date(now);nextEvenHour.setHours(nextEvenHour.getHours()+(nextEvenHour.getHours()%2===0?2:1),0,0,0);const timeLeft=nextEvenHour-now;const hours=Math.floor(timeLeft/(60*60*1000));const minutes=Math.floor((timeLeft%(60*60*1000))/(60*1000));const seconds=Math.floor((timeLeft%(60*1000))/1000);const countdownElem=document.getElementById(\"countdown\");countdownElem.innerText=`${hours.toString().padStart(2,\"0\")}:${minutes.toString().padStart(2,\"0\")}:${seconds.toString().padStart(2,\"0\")}`}updateCountdown();setInterval(updateCountdown,1000);"),
 			),
 		).Class("mb-n4 mt-n2")
-	}).ProfileFunc(profile(db)).
-		NotificationFunc(notifierComponent(db), notifierCount(db)).
-		DataOperator(gorm2op.DataOperator(db)).
-		HomePageFunc(func(ctx *web.EventContext) (r web.PageResponse, err error) {
-			r.PageTitle = "Home"
-			r.Body = Dashboard()
-			return
-		}).
-		NotFoundPageLayoutConfig(&presets.LayoutConfig{
-			SearchBoxInvisible:          true,
-			NotificationCenterInvisible: true,
-		})
+	}).HomePageFunc(func(ctx *web.EventContext) (r web.PageResponse, err error) {
+		r.PageTitle = "Home"
+		r.Body = Dashboard()
+		return
+	}).NotFoundPageLayoutConfig(&presets.LayoutConfig{
+		NotificationCenterInvisible: true,
+	})
 }
 
 func configPost(
 	b *presets.Builder,
 	db *gorm.DB,
-	ab *activity.Builder,
 	publisher *publish.Builder,
-	nb *note.Builder,
+	ab *activity.Builder,
+	seoBuilder *seo.Builder,
 ) *presets.ModelBuilder {
 	m := b.Model(&models.Post{})
-	m.Use(
-		slug.New(),
-		ab,
-		publisher,
-		nb,
-	)
+	defer func() {
+		m.Use(publisher, ab, seoBuilder)
+		m.Detailing().SidePanelFunc(func(obj interface{}, ctx *web.EventContext) h.HTMLComponent {
+			return ab.MustGetModelBuilder(m).NewTimelineCompo(ctx, obj, "_side")
+		})
+	}()
 
-	mListing := m.Listing("ID", "Title", "TitleWithSlug", "HeroImage", "Body").
+	mListing := m.Listing("ID", "Title", "TitleWithSlug", "HeroImage", "Body", activity.ListFieldNotes).
 		SearchColumns("title", "body").
 		PerPage(10)
 
 	mListing.FilterDataFunc(func(ctx *web.EventContext) vx.FilterData {
-		u := getCurrentUser(ctx.R)
-
+		item, err := ab.MustGetModelBuilder(m).NewHasUnreadNotesFilterItem(ctx.R.Context(), "")
+		if err != nil {
+			panic(err)
+		}
 		return []*vx.FilterItem{
-			{
-				Key:          "hasUnreadNotes",
-				Invisible:    true,
-				SQLCondition: fmt.Sprintf(hasUnreadNotesQuery, "posts", "Posts", u.ID, "Posts"),
-			},
+			item,
 			{
 				Key:          "created",
 				Label:        "Create Time",
@@ -578,22 +679,47 @@ func configPost(
 	mListing.FilterTabsFunc(func(ctx *web.EventContext) []*presets.FilterTab {
 		msgr := i18n.MustGetModuleMessages(ctx.R, I18nExampleKey, Messages_en_US).(*Messages)
 
+		tab, err := ab.MustGetModelBuilder(m).NewHasUnreadNotesFilterTab(ctx.R.Context())
+		if err != nil {
+			panic(err)
+		}
 		return []*presets.FilterTab{
 			{
 				Label: msgr.FilterTabsAll,
 				ID:    "all",
 				Query: url.Values{"all": []string{"1"}},
 			},
-			{
-				Label: msgr.FilterTabsHasUnreadNotes,
-				ID:    "hasUnreadNotes",
-				Query: url.Values{"hasUnreadNotes": []string{"1"}},
-			},
+			tab,
 		}
 	})
 
-	ed := m.Editing("StatusBar", "ScheduleBar", "Title", "TitleWithSlug", "Seo", "HeroImage", "Body", "BodyImage")
-	ed.Field("HeroImage").
+	lazyWrapperEditCompoSync := autosync.NewLazyWrapComponentFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) *autosync.Config {
+		return &autosync.Config{
+			SyncFromFromKey: strings.TrimSuffix(field.FormKey, "WithSlug"),
+			InitialChecked:  autosync.InitialCheckedAuto,
+			CheckboxLabel:   "Auto Sync",
+			SyncCall:        autosync.SyncCallSlug,
+		}
+	})
+	m.Editing().Field("TitleWithSlug").LazyWrapComponentFunc(lazyWrapperEditCompoSync)
+	m.Editing().ValidateFunc(func(obj interface{}, ctx *web.EventContext) (err web.ValidationErrors) {
+		if ctx.Param(presets.ParamID) != "" {
+			p := obj.(*models.Post)
+			if p.Title == "" {
+				err.FieldError("Title", "Title Is Required")
+			}
+			if p.TitleWithSlug == "" {
+				err.FieldError("TitleWithSlug", "TitleWithSlug Is Required")
+			}
+		}
+		return
+	})
+	dp := m.Detailing(publish.VersionsPublishBar, "Detail", seo.SeoDetailFieldName).Drawer(true)
+	detailSection := presets.NewSectionBuilder(m, "Detail").
+		Editing("Title", "TitleWithSlug", "HeroImage", "Body", "BodyImage")
+	detailSection.EditingField("TitleWithSlug").LazyWrapComponentFunc(lazyWrapperEditCompoSync)
+	// TODO: need viewing field setting
+	detailSection.EditingField("HeroImage").
 		WithContextValue(
 			media.MediaBoxConfig,
 			&media_library.MediaBoxConfig{
@@ -609,58 +735,19 @@ func configPost(
 					},
 				},
 			})
-	ed.Field("BodyImage").
+	detailSection.EditingField("BodyImage").
 		WithContextValue(
 			media.MediaBoxConfig,
 			&media_library.MediaBoxConfig{})
-
-	ed.Field("Body").ComponentFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
-		return richeditor.RichEditor(db, "Body").Plugins([]string{"alignment", "video", "imageinsert", "fontcolor"}).Value(obj.(*models.Post).Body).Label(field.Label)
+	detailSection.EditingField("Body").ComponentFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
+		extensions := tiptap.TiptapExtensions()
+		return tiptap.TiptapEditor(db, field.Name).
+			Extensions(extensions).
+			MarkdownTheme("github"). // Match tiptap.ThemeGithubCSSComponentsPack
+			Attr(presets.VFieldError(field.FormKey, fmt.Sprint(reflectutils.MustGet(obj, field.Name)), field.Errors)...).
+			Label(field.Label).
+			Disabled(field.Disabled)
 	})
+	dp.Section(detailSection)
 	return m
-}
-
-func notifierCount(db *gorm.DB) func(ctx *web.EventContext) int {
-	return func(ctx *web.EventContext) int {
-		data, err := getUnreadNotesCount(ctx, db)
-		if err != nil {
-			return 0
-		}
-
-		a, b, c := data["Pages"], data["Posts"], data["Users"]
-		return a + b + c
-	}
-}
-
-func notifierComponent(db *gorm.DB) func(ctx *web.EventContext) h.HTMLComponent {
-	return func(ctx *web.EventContext) h.HTMLComponent {
-		data, err := getUnreadNotesCount(ctx, db)
-		if err != nil {
-			return nil
-		}
-
-		a, b, c := data["Pages"], data["Posts"], data["Users"]
-
-		return v.VList(
-			v.VListItem(
-				v.VListItemTitle(h.Text("Pages")),
-				v.VListItemSubtitle(h.Text(fmt.Sprintf("%d unread notes", a))),
-			).Lines(2).Href("/pages?active_filter_tab=hasUnreadNotes&f_hasUnreadNotes=1"),
-			v.VListItem(
-				v.VListItemTitle(h.Text("Posts")),
-				v.VListItemSubtitle(h.Text(fmt.Sprintf("%d unread notes", b))),
-			).Lines(2).Href("/posts?active_filter_tab=hasUnreadNotes&f_hasUnreadNotes=1"),
-			v.VListItem(
-				v.VListItemTitle(h.Text("Users")),
-				v.VListItemSubtitle(h.Text(fmt.Sprintf("%d unread notes", c))),
-			).Lines(2).Href("/users?active_filter_tab=hasUnreadNotes&f_hasUnreadNotes=1"),
-			h.If(a+b+c > 0,
-				v.VListItem(
-					v.VListItemSubtitle(h.Text("Mark all as read")),
-				).Attr("@click", web.Plaid().EventFunc(noteMarkAllAsRead).Go()),
-			),
-		)
-		// .Class("mx-auto")
-		// .Attr("max-width", "140")
-	}
 }

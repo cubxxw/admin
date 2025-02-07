@@ -2,56 +2,52 @@ package pagebuilder
 
 import (
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 
-	"github.com/qor5/admin/v3/publish"
+	"github.com/qor5/web/v3"
 	"github.com/qor5/x/v3/i18n"
-
+	. "github.com/qor5/x/v3/ui/vuetify"
+	vx "github.com/qor5/x/v3/ui/vuetifyx"
+	"github.com/sunfmin/reflectutils"
 	h "github.com/theplant/htmlgo"
-	"gorm.io/gorm"
 
 	"github.com/qor5/admin/v3/l10n"
 	"github.com/qor5/admin/v3/presets"
-	"github.com/qor5/admin/v3/presets/actions"
-	"github.com/qor5/web/v3"
-	. "github.com/qor5/x/v3/ui/vuetify"
-	vx "github.com/qor5/x/v3/ui/vuetifyx"
+	"github.com/qor5/admin/v3/publish"
 )
 
-func overview(b *Builder, templateM *presets.ModelBuilder, pm *presets.ModelBuilder) presets.FieldComponentFunc {
+func overview(m *ModelBuilder) presets.FieldComponentFunc {
+	pm := m.mb
+	b := m.builder
 	return func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
 		var (
 			start, end, se string
 			onlineHint     h.HTMLComponent
-			isTemplate     bool
 			ps             string
+			version        string
 			id             uint
+			containerCount int64
 		)
+		msgr := i18n.MustGetModuleMessages(ctx.R, I18nPageBuilderKey, Messages_en_US).(*Messages)
 		versionComponent := publish.DefaultVersionComponentFunc(pm)(obj, field, ctx)
-		if templateM != nil {
-			isTemplate = strings.Contains(ctx.R.RequestURI, "/"+templateM.Info().URIName()+"/")
-		}
-		if v, ok := obj.(PrimarySlugInterface); ok {
+		if v, ok := obj.(presets.SlugEncoder); ok {
 			ps = v.PrimarySlug()
 		}
-		if v, ok := obj.(interface {
-			GetID() uint
-		}); ok {
-			id = v.GetID()
-			ctx.R.Form.Set(paramPageID, strconv.Itoa(int(id)))
-		}
+
+		id = reflectutils.MustGet(obj, "ID").(uint)
+		ctx.R.Form.Set(paramPageID, strconv.Itoa(int(id)))
+
 		if v, ok := obj.(publish.VersionInterface); ok {
-			ctx.R.Form.Set(paramPageVersion, v.EmbedVersion().Version)
+			version = v.EmbedVersion().Version
+			ctx.R.Form.Set(paramPageVersion, version)
 		}
 		if l, ok := obj.(l10n.LocaleInterface); ok {
 			ctx.R.Form.Set(paramLocale, l.EmbedLocale().LocaleCode)
 		}
-		if isTemplate {
-			ctx.R.Form.Set(paramsTpl, "1")
-		}
 
-		previewDevelopUrl := b.previewHref(ctx, pm, ps)
+		previewDevelopUrl := m.PreviewHref(ctx, ps)
 
 		if schedule, ok := obj.(publish.ScheduleInterface); ok {
 			if em := schedule.EmbedSchedule().ScheduledStartAt; em != nil {
@@ -61,84 +57,128 @@ func overview(b *Builder, templateM *presets.ModelBuilder, pm *presets.ModelBuil
 				end = em.Format("2006-01-02 15:04")
 			}
 			if start != "" || end != "" {
-				se = "Scheduled at: " + start + " ~ " + end
+				se = msgr.ScheduledAt + ": " + start + " ~ " + end
 			}
 		}
-
+		b.db.Model(&Container{}).
+			Where("page_id = ? AND page_version = ? and page_model_name = ?", id, version, m.name).
+			Count(&containerCount)
+		var copyURL string
 		if p, ok := obj.(publish.StatusInterface); ok {
+			copyURL = fmt.Sprintf(`$event.view.window.location.origin+%q`, previewDevelopUrl)
 			if p.EmbedStatus().Status == publish.StatusOnline {
-				onlineHint = VAlert(h.Text("The version cannot be edited directly after it is released. Please copy the version and edit it.")).Density(DensityCompact).Type(TypeInfo).Variant(VariantTonal).Closable(true).Class("mb-2")
+				onlineHint = VAlert(h.Text(msgr.OnlineHit)).
+					Density(DensityCompact).Type(TypeInfo).Variant(VariantTonal).Closable(true).Class("my-4")
+				var err error
+				previewDevelopUrl, err = b.publisher.FullUrl(ctx.R.Context(), p.EmbedStatus().OnlineUrl)
+				if err != nil {
+					panic(err)
+				}
+				copyURL = fmt.Sprintf(`%q`, previewDevelopUrl)
 			}
+		}
+		previewComp := h.A(h.Text(previewDevelopUrl)).Href(previewDevelopUrl)
+		if m.builder.previewOpenNewTab {
+			previewComp.Target("_blank")
 		}
 		return h.Div(
 			onlineHint,
 			versionComponent,
+			web.Listen(m.mb.NotifModelsUpdated(),
+				web.Plaid().URL(m.mb.Info().DetailingHref(ps)).Go()),
 			h.Div(
-				h.Iframe().Src(previewDevelopUrl).Attr("scrolling", "no", "frameborder", "0").
-					Style(`height:320px;width:100%;pointer-events: none; background: linear-gradient(180deg, rgba(255, 255, 255, 0.00) 60%, rgba(255, 255, 255, 0.60) 100%), url(<path-to-image>) lightgray 50% / cover no-repeat;`),
+				h.Div(
+					h.If(containerCount == 0,
+						h.Div(
+							VCard(
+								VCardTitle(h.RawHTML(previewIframeEmptySvg)).Class("d-flex justify-center"),
+								VCardSubtitle(h.Text(msgr.NoContentHit)).
+									Class("d-flex justify-center"),
+							).Flat(true).Class("bg-"+ColorGreyLighten4),
+						).Class("d-flex align-center justify-center", H100, "bg-"+ColorGreyLighten4),
+					),
+					h.If(containerCount > 0,
+						h.Iframe().Src(previewDevelopUrl).
+							Attr("scrolling", "no", "frameborder", "0").
+							Style(`pointer-events: none; 
+ -webkit-mask-image: radial-gradient(circle, black 80px, transparent);
+  mask-image: radial-gradient(circle, black 80px, transparent);
+transform-origin: 0 0; transform:scale(0.5);width:200%;height:200%`),
+					),
+				).Class(W100, H100, "overflow-hidden"),
 				h.Div(
 					h.Div(
 						h.Text(se),
-					).Class(fmt.Sprintf("bg-%s", ColorSecondaryLighten2)),
-					VBtn("Edit Page").AppendIcon("mdi-pencil").Color(ColorSecondary).
-						Class("rounded-sm").Height(40).Variant(VariantFlat),
+					).Class(fmt.Sprintf("bg-%s", ColorGreyLighten3)),
+					VBtn(msgr.EditPage).AppendIcon("mdi-pencil").Color(ColorBlack).
+						Class("rounded").Height(36).Variant(VariantElevated),
 				).Class("pa-6 w-100 d-flex justify-space-between align-center").Style(`position:absolute;bottom:0;left:0`),
-			).Style(`position:relative`).Class("w-100").
+			).Style(`position:relative;height:320px;width:100%`).Class("border-thin rounded-lg").
 				Attr("@click",
-					web.Plaid().URL(fmt.Sprintf("%s/%s/editors/%v", b.prefix, pm.Info().URIName(), ps)).PushState(true).Go(),
+					web.Plaid().URL(m.editorURLWithSlug(ps)).PushState(true).Go(),
 				),
 			h.Div(
-				h.A(h.Text(previewDevelopUrl)).Href(previewDevelopUrl),
-				VBtn("").Icon("mdi-file-document-multiple").Variant(VariantText).Size(SizeXSmall).Class("ml-1").
-					Attr("@click", fmt.Sprintf(`$event.view.window.navigator.clipboard.writeText($event.view.window.location.origin+"%s");vars.presetsMessage = { show: true, message: "success", color: "%s"}`, previewDevelopUrl, ColorSuccess)),
-			).Class("d-inline-flex align-center"),
+				previewComp,
+				VBtn("").Icon("mdi-content-copy").Color(ColorSecondary).Width(20).Height(20).Variant(VariantText).Size(SizeXSmall).Class("ml-1 fix-btn-icon").
+					Attr("@click", fmt.Sprintf(`$event.view.window.navigator.clipboard.writeText(%s);vars.presetsMessage = { show: true, message: "success", color: %q}`, copyURL, ColorSuccess)),
+			).Class("d-inline-flex align-center py-4"),
 		).Class("my-10")
 	}
 }
 
-func templateSettings(_ *gorm.DB, pm *presets.ModelBuilder) presets.FieldComponentFunc {
-	return func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
-		p := obj.(*Template)
-
-		overview := vx.DetailInfo(
-			vx.DetailColumn(
-				vx.DetailField(vx.OptionalText(p.Name)).Label("Title"),
-				vx.DetailField(vx.OptionalText(p.Description)).Label("Description"),
-			),
-		)
-
-		editBtn := VBtn("Edit").Variant(VariantFlat).
-			Attr("@click", web.POST().
-				EventFunc(actions.Edit).
-				Query(presets.ParamOverlay, actions.Dialog).
-				Query(presets.ParamID, p.PrimarySlug()).
-				URL(pm.Info().ListingHref()).Go(),
+func detailPageEditor(dp *presets.DetailingBuilder, mb *presets.ModelBuilder, b *Builder) {
+	db := b.db
+	fields := b.filterFields([]interface{}{"Title", "CategoryID", "Slug"})
+	section := presets.NewSectionBuilder(mb, "Page").
+		Editing(fields...).WrapValidator(func(in presets.ValidateFunc) presets.ValidateFunc {
+		return func(obj interface{}, ctx *web.EventContext) (err web.ValidationErrors) {
+			var (
+				p    = obj.(*Page)
+				msgr = i18n.MustGetModuleMessages(ctx.R, I18nPageBuilderKey, Messages_en_US).(*Messages)
 			)
+			if p.Status.Status == publish.StatusOnline || p.Status.Status == publish.StatusOffline {
+				err.GlobalError(msgr.TheResourceCanNotBeModified)
+				return
+			}
 
-		return VContainer(
-			VRow(
-				VCol(
-					vx.Card(overview).HeaderTitle("Overview").
-						Actions(
-							h.If(editBtn != nil, editBtn),
-						).Class("mb-4 rounded-lg").Variant(VariantOutlined),
-				).Cols(8),
-			),
-		)
+			if err = pageValidator(ctx, p, db, b.l10n); err.HaveErrors() {
+				return
+			}
+			return
+		}
+	})
+	if b.expectField("Title") {
+		section.ViewingField("Title").LazyWrapComponentFunc(func(in presets.FieldComponentFunc) presets.FieldComponentFunc {
+			return func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
+				comp := in(obj, field, ctx)
+				p := obj.(*Page)
+				return h.Div(comp).Attr(web.VAssign("vars", fmt.Sprintf(`{pageTitle:%q}`, p.Title))...)
+			}
+		})
 	}
-}
-
-func detailingRow(label string, showComp h.HTMLComponent) (r *h.HTMLTagBuilder) {
-	return h.Div(
-		h.Div(h.Text(label)).Class("text-subtitle-2").Style("width:180px;height:20px"),
-		h.Div(showComp).Class("text-body-1 ml-2 w-100"),
-	).Class("d-flex align-center ma-2").Style("height:40px")
-}
-
-func detailPageEditor(dp *presets.DetailingBuilder, db *gorm.DB) {
-	dp.Section("Page").
-		Editing("Title", "Slug", "CategoryID").
-		ViewComponentFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
+	if b.expectField("Slug") {
+		section.EditingField("Slug").LazyWrapComponentFunc(func(in presets.FieldComponentFunc) presets.FieldComponentFunc {
+			return func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
+				msgr := i18n.MustGetModuleMessages(ctx.R, I18nPageBuilderKey, Messages_en_US).(*Messages)
+				comp := in(obj, field, ctx)
+				p := obj.(*Page)
+				return comp.(*vx.VXFieldBuilder).Label(msgr.Slug).
+					Attr(presets.VFieldError(field.FormKey, strings.TrimPrefix(p.Slug, "/"), field.Errors)...).
+					Attr("prefix", "/")
+			}
+		}).LazyWrapSetterFunc(func(in presets.FieldSetterFunc) presets.FieldSetterFunc {
+			return func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) (err error) {
+				p := obj.(*Page)
+				p.Slug = path.Join("/", p.Slug)
+				if err = in(obj, field, ctx); err != nil {
+					return
+				}
+				return
+			}
+		})
+	}
+	if b.expectField("CategoryID") {
+		section.ViewingField("CategoryID").ComponentFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
 			p := obj.(*Page)
 			var (
 				category Category
@@ -148,54 +188,33 @@ func detailPageEditor(dp *presets.DetailingBuilder, db *gorm.DB) {
 				panic(err)
 			}
 			msgr := i18n.MustGetModuleMessages(ctx.R, I18nPageBuilderKey, Messages_en_US).(*Messages)
-			return h.Div(
-				h.Div(h.Text(msgr.PageOverView)).Class("text-h4"),
-				detailingRow("Title", h.Text(p.Title)).Attr(web.VAssign("vars", fmt.Sprintf(`{pageTitle:"%s"}`, p.Title))...),
-				detailingRow("Slug", h.Text(p.Slug)),
-				detailingRow(msgr.Category, h.Text(category.Path)),
-			)
-		}).EditComponentFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
-		p := obj.(*Page)
-		categories := []*Category{}
-		locale, _ := l10n.IsLocalizableFromContext(ctx.R.Context())
-		if err := db.Model(&Category{}).Where("locale_code = ?", locale).Find(&categories).Error; err != nil {
-			panic(err)
-		}
 
-		var vErr web.ValidationErrors
-		if ve, ok := ctx.Flash.(*web.ValidationErrors); ok {
-			vErr = *ve
-		}
-		msgr := i18n.MustGetModuleMessages(ctx.R, I18nPageBuilderKey, Messages_en_US).(*Messages)
-		return h.Components(
-			h.Div(h.Text(msgr.PageOverView)).Class("text-h4"),
-			detailingRow("Title",
-				VTextField().
-					Variant(VariantOutlined).
-					Density(DensityCompact).
-					HideDetails(true).
-					Attr(web.VField("Page.Title", p.Title)...),
-			),
-			detailingRow("Slug",
-				VTextField().
-					Variant(VariantOutlined).
-					Density(DensityCompact).
-					HideDetails(true).
-					Attr(web.VField("Page.Slug", strings.TrimPrefix(p.Slug, "/"))...).
-					Prefix("/").
-					ErrorMessages(vErr.GetFieldErrors("Page.Category")...),
-			),
-			detailingRow(msgr.Category,
-				VAutocomplete().
-					Variant(VariantOutlined).
-					Density(DensityCompact).
-					HideDetails(true).
-					Attr(web.VField("Page.CategoryID", p.CategoryID)...).
-					Multiple(false).Chips(false).
-					Items(categories).ItemTitle("Path").ItemValue("ID").
-					ErrorMessages(vErr.GetFieldErrors("Page.CategoryID")...),
-			),
-		)
-	})
+			return presets.ReadonlyText(obj, field, ctx).
+				Label(msgr.Category).
+				Value(category.Path)
+		})
+		section.EditingField("CategoryID").ComponentFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
+			var (
+				p          = obj.(*Page)
+				categories []*Category
+				locale, _  = l10n.IsLocalizableFromContext(ctx.R.Context())
+			)
+			if err := db.Model(&Category{}).Where("locale_code = ?", locale).Find(&categories).Error; err != nil {
+				panic(err)
+			}
+			msgr := i18n.MustGetModuleMessages(ctx.R, I18nPageBuilderKey, Messages_en_US).(*Messages)
+			complete := presets.SelectField(obj, field, ctx).
+				Multiple(false).Chips(false).
+				Label(msgr.Category).
+				Items(categories).ItemTitle("Path").ItemValue("ID")
+			if p.CategoryID > 0 {
+				complete.Attr(presets.VFieldError(field.FormKey, p.CategoryID, field.Errors)...)
+			} else {
+				complete.Attr(presets.VFieldError(field.FormKey, "", field.Errors)...)
+			}
+			return complete
+		})
+	}
+	dp.Section(section)
 	return
 }

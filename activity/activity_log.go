@@ -1,127 +1,68 @@
 package activity
 
 import (
-	"time"
+	"fmt"
+	"strings"
+
+	"github.com/pkg/errors"
+	"gorm.io/gorm"
 )
 
 const (
-	ActivityView   = "View"
-	ActivityEdit   = "Edit"
-	ActivityCreate = "Create"
-	ActivityDelete = "Delete"
+	ActionView     = "View"
+	ActionEdit     = "Edit"
+	ActionCreate   = "Create"
+	ActionDelete   = "Delete"
+	ActionNote     = "Note"
+	ActionLastView = "LastView" // hidden and only for internal use
 )
 
-type CreatorInterface interface {
-	GetID() uint
-	GetName() string
-}
+var DefaultActions = []string{ActionCreate /* ActionView,*/, ActionEdit, ActionDelete, ActionNote}
 
-type ActivityLogInterface interface {
-	SetCreatedAt(time.Time)
-	GetCreatedAt() time.Time
-	SetUserID(uint)
-	GetUserID() uint
-	SetCreator(string)
-	GetCreator() string
-	SetAction(string)
-	GetAction() string
-	SetModelKeys(string)
-	GetModelKeys() string
-	SetModelName(string)
-	GetModelName() string
-	SetModelLabel(string)
-	GetModelLabel() string
-	SetModelLink(string)
-	GetModelLink() string
-	SetModelDiffs(string)
-	GetModelDiffs() string
+func defaultActionLabels(msgr *Messages) map[string]string {
+	return map[string]string{
+		ActionCreate: msgr.ActionCreate,
+		ActionView:   msgr.ActionView,
+		ActionEdit:   msgr.ActionEdit,
+		ActionDelete: msgr.ActionDelete,
+		ActionNote:   msgr.ActionNote,
+	}
 }
 
 type ActivityLog struct {
-	ID         uint `gorm:"primary_key"`
-	UserID     uint
-	CreatedAt  time.Time
-	Creator    string
-	Action     string
-	ModelKeys  string `gorm:"index"`
-	ModelName  string `gorm:"index"`
-	ModelLabel string
+	gorm.Model
 
-	ModelLink  string
-	ModelDiffs string `sql:"type:text;"`
+	UserID string `gorm:"index;not null;"`
+	User   User   `gorm:"-"`
+
+	Action     string `gorm:"index;not null;"`
+	Hidden     bool   `gorm:"index;default:false;not null;"`
+	ModelName  string `gorm:"index;not null;"`
+	ModelKeys  string `gorm:"index;not null;"`
+	ModelLabel string `gorm:"not null;"` // IMPROVE: need named resource sign
+	ModelLink  string `gorm:"not null;"`
+	Detail     string `gorm:"not null;"`
+	Scope      string `gorm:"index;"`
 }
 
-func (al *ActivityLog) SetCreatedAt(t time.Time) {
-	al.CreatedAt = t
-}
-
-func (al ActivityLog) GetCreatedAt() time.Time {
-	return al.CreatedAt
-}
-
-func (al *ActivityLog) SetUserID(id uint) {
-	al.UserID = id
-}
-
-func (al ActivityLog) GetUserID() uint {
-	return al.UserID
-}
-
-func (al *ActivityLog) SetCreator(s string) {
-	al.Creator = s
-}
-
-func (al *ActivityLog) GetCreator() string {
-	return al.Creator
-}
-
-func (al *ActivityLog) SetAction(s string) {
-	al.Action = s
-}
-
-func (al *ActivityLog) GetAction() string {
-	return al.Action
-}
-
-func (al *ActivityLog) SetModelKeys(s string) {
-	al.ModelKeys = s
-}
-
-func (al *ActivityLog) GetModelKeys() string {
-	return al.ModelKeys
-}
-
-func (al *ActivityLog) SetModelName(s string) {
-	al.ModelName = s
-}
-
-func (al *ActivityLog) GetModelName() string {
-	return al.ModelName
-}
-
-func (al *ActivityLog) SetModelLabel(s string) {
-	al.ModelLabel = s
-}
-
-func (al *ActivityLog) GetModelLabel() string {
-	if al.ModelLabel == "" {
-		return "-"
+func (v *ActivityLog) AfterMigrate(tx *gorm.DB, tablePrefix string) error {
+	s, err := ParseSchemaWithDB(tx, v)
+	if err != nil {
+		return err
 	}
-	return al.ModelLabel
-}
+	tableName := tablePrefix + s.Table
 
-func (al *ActivityLog) SetModelLink(s string) {
-	al.ModelLink = s
-}
-
-func (al *ActivityLog) GetModelLink() string {
-	return al.ModelLink
-}
-
-func (al *ActivityLog) SetModelDiffs(s string) {
-	al.ModelDiffs = s
-}
-
-func (al *ActivityLog) GetModelDiffs() string {
-	return al.ModelDiffs
+	tableBare := tableName
+	if tables := strings.Split(tableName, "."); len(tables) == 2 {
+		tableBare = tables[1]
+	}
+	uix := fmt.Sprintf(`uix_%s_user_id_model_name_keys_action_lastview`, tableBare)
+	if err := tx.Exec(fmt.Sprintf(`
+		CREATE UNIQUE INDEX IF NOT EXISTS %s
+		ON %s (user_id, model_name, model_keys)
+		WHERE action = '%s' AND deleted_at IS NULL
+	`, uix, tableName, ActionLastView)).Error; err != nil {
+		return errors.Wrapf(err, "failed to create index %s", uix)
+	}
+	return nil
 }

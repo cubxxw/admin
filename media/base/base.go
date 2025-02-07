@@ -46,7 +46,7 @@ func (fileWrapper *fileWrapper) Open() (multipart.File, error) {
 type Base struct {
 	FileName    string
 	Url         string
-	CropOptions map[string]*CropOption `json:",omitempty"`
+	CropOptions map[string]*CropOption `json:"-"`
 	Delete      bool                   `json:"-"`
 	Crop        bool                   `json:"-"`
 	FileHeader  FileHeader             `json:"-"`
@@ -74,7 +74,7 @@ func (b *Base) Scan(data interface{}) (err error) {
 			}
 		}
 	case []byte:
-		if string(values) != "" {
+		if len(values) != 0 {
 			if err = json.Unmarshal(values, b); err == nil {
 				var options struct {
 					Crop   bool
@@ -98,6 +98,10 @@ func (b *Base) Scan(data interface{}) (err error) {
 				return err
 			}
 		}
+	case *MemoryFile:
+		b.FileHeader = values
+		b.FileName = filepath.Base(values.name)
+		return
 	default:
 		err = errors.New("unsupported driver -> Scan pair for MediaLibrary")
 	}
@@ -112,7 +116,7 @@ func (b *Base) Scan(data interface{}) (err error) {
 }
 
 // Value return struct's Value
-func (b Base) Value() (driver.Value, error) {
+func (b *Base) Value() (driver.Value, error) {
 	if b.Delete {
 		return nil, nil
 	}
@@ -121,12 +125,12 @@ func (b Base) Value() (driver.Value, error) {
 	return string(results), err
 }
 
-func (b Base) Ext() string {
+func (b *Base) Ext() string {
 	return strings.ToLower(path.Ext(b.Url))
 }
 
 // URL return file's url with given style
-func (b Base) URL(styles ...string) string {
+func (b *Base) URL(styles ...string) string {
 	if b.Url != "" && len(styles) > 0 {
 		ext := path.Ext(b.Url)
 		return fmt.Sprintf("%v.%v%v", strings.TrimSuffix(b.Url, ext), styles[0], ext)
@@ -134,13 +138,21 @@ func (b Base) URL(styles ...string) string {
 	return b.Url
 }
 
+func (b *Base) URLNoCached(styles ...string) string {
+	i := b.URL(styles...)
+	if i != "" {
+		return i + "?" + fmt.Sprint(time.Now().Nanosecond())
+	}
+	return i
+}
+
 // String return file's url
-func (b Base) String() string {
+func (b *Base) String() string {
 	return b.URL()
 }
 
 // GetFileName get file's name
-func (b Base) GetFileName() string {
+func (b *Base) GetFileName() string {
 	if b.FileName != "" {
 		return b.FileName
 	}
@@ -151,22 +163,22 @@ func (b Base) GetFileName() string {
 }
 
 // GetFileHeader get file's header, this value only exists when saving files
-func (b Base) GetFileHeader() FileHeader {
+func (b *Base) GetFileHeader() FileHeader {
 	return b.FileHeader
 }
 
 // GetURLTemplate get url template
-func (b Base) GetURLTemplate(option *Option) (path string) {
+func (b *Base) GetURLTemplate(option *Option) (path string) {
 	if path = option.Get("URL"); path == "" {
 		path = "/system/{{class}}/{{primary_key}}/{{column}}/{{filename_with_hash}}"
 	}
 	return
 }
 
-var urlReplacer = regexp.MustCompile("(\\s|\\+)+")
+var urlReplacer = regexp.MustCompile(`(\s|\+)+`)
 
 func getFuncMap(db *gorm.DB, field *schema.Field, filename string) template.FuncMap {
-	hash := func() string { return strings.Replace(time.Now().Format("20060102150405.000000"), ".", "", -1) }
+	hash := func() string { return strings.ReplaceAll(time.Now().Format("20060102150405.000000"), ".", "") }
 	shortHash := func() string { return time.Now().Format("20060102150405") }
 
 	return template.FuncMap{
@@ -195,7 +207,7 @@ func getFuncMap(db *gorm.DB, field *schema.Field, filename string) template.Func
 }
 
 // GetURL get default URL for a model based on its options
-func (b Base) GetURL(option *Option, db *gorm.DB, field *schema.Field, templater URLTemplater) string {
+func (b *Base) GetURL(option *Option, db *gorm.DB, field *schema.Field, templater URLTemplater) string {
 	if path := templater.GetURLTemplate(option); path != "" {
 		tmpl := template.New("").Funcs(getFuncMap(db, field, b.GetFileName()))
 		if tmpl, err := tmpl.Parse(path); err == nil {
@@ -242,24 +254,56 @@ func (b *Base) GetFileSizes() map[string]int {
 }
 
 // Retrieve retrieve file content with url
-func (b Base) Retrieve(url string) (*os.File, error) {
+func (b *Base) Retrieve(url string) (*os.File, error) {
 	return nil, errors.New("not implemented")
 }
 
 // GetSizes get configured sizes, it will be used to crop images accordingly
-func (b Base) GetSizes() map[string]*Size {
+func (b *Base) GetSizes() map[string]*Size {
 	return map[string]*Size{}
 }
 
 // IsImage return if it is an image
-func (b Base) IsImage() bool {
+func (b *Base) IsImage() bool {
 	return IsImageFormat(b.URL())
 }
 
-func (b Base) IsVideo() bool {
+func (b *Base) IsVideo() bool {
 	return IsVideoFormat(b.URL())
 }
 
-func (b Base) IsSVG() bool {
+func (b *Base) IsSVG() bool {
 	return IsSVGFormat(b.URL())
+}
+
+type MemoryFile struct {
+	reader *bytes.Reader
+	name   string
+}
+
+func (m *MemoryFile) Close() error {
+	return nil
+}
+
+func (m *MemoryFile) Read(p []byte) (int, error) {
+	return m.reader.Read(p)
+}
+
+func (m *MemoryFile) Seek(offset int64, whence int) (int64, error) {
+	return m.reader.Seek(offset, whence)
+}
+
+func (m *MemoryFile) ReadAt(p []byte, off int64) (int, error) {
+	return m.reader.ReadAt(p, off)
+}
+
+func (m *MemoryFile) Open() (multipart.File, error) {
+	return m, nil
+}
+
+func NewMemoryFile(filename string, data []byte) *MemoryFile {
+	return &MemoryFile{
+		name:   filename,
+		reader: bytes.NewReader(data),
+	}
 }

@@ -1,4 +1,4 @@
-FROM golang:1.22.3-alpine as builder
+FROM golang:1.22.5-alpine as builder
 RUN apk update && apk add git gcc libc-dev && rm -rf /var/cache/apk/*
 ARG GITHUB_TOKEN
 WORKDIR /qor5
@@ -6,7 +6,7 @@ COPY . .
 RUN set -x && go get -d -v ./docs/docsrc/...
 RUN GOOS=linux GOARCH=amd64 go build -o /app/entry ./docs/docsrc/server/
 
-FROM alpine:3.16
+FROM alpine:3.21.2
 RUN apk --update upgrade && \
     apk add ca-certificates && \
     apk add tzdata && \

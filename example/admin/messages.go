@@ -29,16 +29,6 @@ type Messages struct {
 	Status                         string
 	ChangePassword                 string
 	LoginSessions                  string
-	LoginSessionsTips              string
-	SignOutAllOtherSessions        string
-	Expired                        string
-	Active                         string
-	CurrentSession                 string
-	Time                           string
-	Device                         string
-	IPAddress                      string
-	HideIPTips                     string
-	SignOutAllSuccessfullyTips     string
 }
 
 var Messages_en_US = &Messages{
@@ -64,16 +54,6 @@ var Messages_en_US = &Messages{
 	Status:                         "Status",
 	ChangePassword:                 "Change Password",
 	LoginSessions:                  "Login Sessions",
-	LoginSessionsTips:              "Places where you're logged into QOR5 admin.",
-	SignOutAllOtherSessions:        "Sign out all other sessions",
-	Expired:                        "Expired",
-	Active:                         "Active",
-	CurrentSession:                 "Current Session",
-	Time:                           "Time",
-	Device:                         "Device",
-	IPAddress:                      "IP Address",
-	HideIPTips:                     "Invisible due to security concerns",
-	SignOutAllSuccessfullyTips:     "All other sessions have successfully been signed out.",
 }
 
 var Messages_ja_JP = &Messages{
@@ -99,16 +79,6 @@ var Messages_ja_JP = &Messages{
 	Status:                         "ステータス",
 	ChangePassword:                 "パスワードを変更する",
 	LoginSessions:                  "ログインセッション",
-	LoginSessionsTips:              "QOR5管理者にログインしている場所。",
-	SignOutAllOtherSessions:        "他のすべてのセッションをサインアウトする",
-	Expired:                        "期限切れ",
-	Active:                         "アクティブ",
-	CurrentSession:                 "現在のセッション",
-	Time:                           "時間",
-	Device:                         "デバイス",
-	IPAddress:                      "IPアドレス",
-	HideIPTips:                     "セキュリティ上の理由から非表示",
-	SignOutAllSuccessfullyTips:     "他のすべてのセッションは正常にサインアウトされました。",
 }
 
 var Messages_zh_CN = &Messages{
@@ -134,16 +104,6 @@ var Messages_zh_CN = &Messages{
 	Status:                         "状态",
 	ChangePassword:                 "修改密码",
 	LoginSessions:                  "登录会话",
-	LoginSessionsTips:              "您在QOR5管理中登录的地方。",
-	SignOutAllOtherSessions:        "退出所有其他会话",
-	Expired:                        "已过期",
-	Active:                         "活跃",
-	CurrentSession:                 "当前会话",
-	Time:                           "时间",
-	Device:                         "设备",
-	IPAddress:                      "IP地址",
-	HideIPTips:                     "由于安全原因，隐藏",
-	SignOutAllSuccessfullyTips:     "所有其他会话已成功退出。",
 }
 
 type Messages_ModelsI18nModuleKey struct {
@@ -170,7 +130,7 @@ type Messages_ModelsI18nModuleKey struct {
 	SharedContainers         string
 	DemoContainers           string
 	Templates                string
-	Categories               string
+	PageCategories           string
 	ECManagement             string
 	ECDashboard              string
 	Orders                   string
@@ -186,7 +146,6 @@ type Messages_ModelsI18nModuleKey struct {
 	ListModels               string
 	MicrositeModels          string
 	Workers                  string
-	ActivityLogs             string
 	MediaLibrary             string
 
 	PagesID         string
@@ -195,7 +154,14 @@ type Messages_ModelsI18nModuleKey struct {
 	PagesLocale     string
 	PagesNotes      string
 	PagesDraftCount string
+	PagesPath       string
 	PagesOnline     string
+	PagesVersion    string
+	PagesVersions   string
+	PagesStartAt    string
+	PagesEndAt      string
+	PagesOption     string
+	PagesLive       string
 
 	Page                   string
 	PagesStatus            string
@@ -207,6 +173,8 @@ type Messages_ModelsI18nModuleKey struct {
 	WebHeader       string
 	WebHeadersColor string
 	Header          string
+	Navigation      string
+	Content         string
 
 	WebFooter             string
 	WebFootersEnglishUrl  string
@@ -287,6 +255,11 @@ type Messages_ModelsI18nModuleKey struct {
 	ContactFormsThankyouMessage    string
 	ContactFormsActionUrl          string
 	ContactFormsPrivacyPolicy      string
+
+	ActivityActionLogIn         string
+	ActivityActionExtendSession string
+
+	PagesPage string
 }
 
 var Messages_zh_CN_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
@@ -313,7 +286,7 @@ var Messages_zh_CN_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
 	SharedContainers:         "公用组件",
 	DemoContainers:           "示例组件",
 	Templates:                "模板页面",
-	Categories:               "目录管理",
+	PageCategories:           "目录管理",
 	ECManagement:             "电子商务管理",
 	ECDashboard:              "电子商务仪表盘",
 	Orders:                   "订单管理",
@@ -329,7 +302,6 @@ var Messages_zh_CN_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
 	ListModels:               "发布带排序及分页模块 示例",
 	MicrositeModels:          "Microsite 示例",
 	Workers:                  "后台工作进程管理",
-	ActivityLogs:             "操作日志",
 	MediaLibrary:             "媒体库",
 
 	PagesID:         "ID",
@@ -338,10 +310,17 @@ var Messages_zh_CN_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
 	PagesLocale:     "地区",
 	PagesNotes:      "备注",
 	PagesDraftCount: "草稿数",
+	PagesPath:       "路径",
 	PagesOnline:     "在线",
+	PagesVersion:    "版本",
+	PagesVersions:   "版本",
+	PagesStartAt:    "开始时间",
+	PagesEndAt:      "结束时间",
+	PagesOption:     "选项",
+	PagesLive:       "发布状态",
 
 	Page:                   "Page",
-	PagesStatus:            "PagesStatus",
+	PagesStatus:            "状态",
 	PagesSchedule:          "PagesSchedule",
 	PagesCategoryID:        "PagesCategoryID",
 	PagesTemplateSelection: "PagesTemplateSelection",
@@ -350,6 +329,8 @@ var Messages_zh_CN_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
 	WebHeader:       "WebHeader",
 	WebHeadersColor: "WebHeadersColor",
 	Header:          "Header",
+	Navigation:      "Navigation",
+	Content:         "Content",
 
 	WebFooter:             "WebFooter",
 	WebFootersEnglishUrl:  "WebFootersEnglishUrl",
@@ -430,6 +411,11 @@ var Messages_zh_CN_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
 	ContactFormsThankyouMessage:    "ContactFormsThankyouMessage",
 	ContactFormsActionUrl:          "ContactFormsActionUrl",
 	ContactFormsPrivacyPolicy:      "ContactFormsPrivacyPolicy",
+
+	ActivityActionLogIn:         "登录",
+	ActivityActionExtendSession: "延长会话",
+
+	PagesPage: "Page",
 }
 
 var Messages_ja_JP_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
@@ -456,7 +442,7 @@ var Messages_ja_JP_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
 	SharedContainers:         "共有コンテナ",
 	DemoContainers:           "デモ用コン店た",
 	Templates:                "テンプレート",
-	Categories:               "カテゴリー",
+	PageCategories:           "カテゴリ",
 	ECManagement:             "ECマネジメント",
 	ECDashboard:              "ECダッシュボード",
 	Orders:                   "注文",
@@ -472,7 +458,6 @@ var Messages_ja_JP_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
 	ListModels:               "リストモデル",
 	MicrositeModels:          "マイクロサイトモデル",
 	Workers:                  "ワーカーズ",
-	ActivityLogs:             "アクティビティ履歴",
 	MediaLibrary:             "メディアライブラリ",
 
 	PagesID:         "ID",
@@ -481,18 +466,27 @@ var Messages_ja_JP_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
 	PagesLocale:     "ローカル",
 	PagesNotes:      "ノート",
 	PagesDraftCount: "カウント下書き",
+	PagesPath:       "パス",
 	PagesOnline:     "オンライン",
+	PagesVersion:    "バージョン",
+	PagesVersions:   "バージョン",
+	PagesStartAt:    "開始日時",
+	PagesEndAt:      "終了日時",
+	PagesOption:     "オプション",
+	PagesLive:       "ライブ",
 
 	Page:                   "ページ",
 	PagesStatus:            "状態",
 	PagesSchedule:          "スケジュール",
-	PagesCategoryID:        "カテゴリーID",
+	PagesCategoryID:        "カテゴリID",
 	PagesTemplateSelection: "テンプレート選択",
 	PagesEditContainer:     "コンテナ編集",
 
 	WebHeader:       "ウェブヘッダー",
 	WebHeadersColor: "カラー",
 	Header:          "ヘッダー",
+	Navigation:      "Navigation",
+	Content:         "Content",
 
 	WebFooter:             "ウェブ用フッター",
 	WebFootersEnglishUrl:  "英語用URL",
@@ -573,4 +567,9 @@ var Messages_ja_JP_ModelsI18nModuleKey = &Messages_ModelsI18nModuleKey{
 	ContactFormsThankyouMessage:    "サンキューメッセージ",
 	ContactFormsActionUrl:          "アクションURL",
 	ContactFormsPrivacyPolicy:      "プライバシーポリシー",
+
+	ActivityActionLogIn:         "ログイン",
+	ActivityActionExtendSession: "セッション延長",
+
+	PagesPage: "ページ",
 }
