@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/qor/oss"
 	"github.com/qor5/admin/v3/media/media_library"
 	"github.com/qor5/admin/v3/publish"
+	"github.com/qor5/x/v3/oss"
 	"gorm.io/gorm"
 )
 
@@ -40,11 +40,11 @@ func (p *Product) PrimaryColumnValuesBySlug(slug string) map[string]string {
 	}
 }
 
-func (p *Product) GetPublishActions(db *gorm.DB, ctx context.Context, storage oss.StorageInterface) (objs []*publish.PublishAction, err error) {
+func (p *Product) GetPublishActions(ctx context.Context, db *gorm.DB, storage oss.StorageInterface) (actions []*publish.PublishAction, err error) {
 	return
 }
 
-func (p *Product) GetUnPublishActions(db *gorm.DB, ctx context.Context, storage oss.StorageInterface) (objs []*publish.PublishAction, err error) {
+func (p *Product) GetUnPublishActions(ctx context.Context, db *gorm.DB, storage oss.StorageInterface) (actions []*publish.PublishAction, err error) {
 	return
 }
 

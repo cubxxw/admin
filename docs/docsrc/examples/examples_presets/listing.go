@@ -6,17 +6,20 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/qor5/web/v3"
+	h "github.com/theplant/htmlgo"
+	"github.com/theplant/relay/cursor"
+	"golang.org/x/text/language"
+	"gorm.io/gorm"
+
+	"github.com/qor5/x/v3/i18n"
+	v "github.com/qor5/x/v3/ui/vuetify"
+	"github.com/qor5/x/v3/ui/vuetifyx"
+
 	"github.com/qor5/admin/v3/media/media_library"
 	"github.com/qor5/admin/v3/presets"
 	"github.com/qor5/admin/v3/presets/actions"
 	"github.com/qor5/admin/v3/presets/gorm2op"
-	"github.com/qor5/web/v3"
-	"github.com/qor5/x/v3/i18n"
-	v "github.com/qor5/x/v3/ui/vuetify"
-	"github.com/qor5/x/v3/ui/vuetifyx"
-	h "github.com/theplant/htmlgo"
-	"golang.org/x/text/language"
-	"gorm.io/gorm"
 )
 
 type Customer struct {
@@ -59,13 +62,42 @@ func PresetsHelloWorld(b *presets.Builder, db *gorm.DB) (
 
 	b.DataOperator(gorm2op.DataOperator(db))
 	mb = b.Model(&Customer{})
-
+	cl = mb.Listing()
+	ce = mb.Editing()
 	return
 }
 
 // @snippet_end
 
+func PresetsKeywordSearchOff(b *presets.Builder, db *gorm.DB) (
+	mb *presets.ModelBuilder,
+	cl *presets.ListingBuilder,
+	ce *presets.EditingBuilder,
+	dp *presets.DetailingBuilder,
+) {
+	mb, cl, ce, dp = PresetsHelloWorld(b, db)
+	cl.KeywordSearchOff(true)
+	return
+}
+
 // @snippet_begin(PresetsListingCustomizationFieldsSample)
+
+func PresetsRowMenuAction(b *presets.Builder, db *gorm.DB) (
+	mb *presets.ModelBuilder,
+	cl *presets.ListingBuilder,
+	ce *presets.EditingBuilder,
+	dp *presets.DetailingBuilder,
+) {
+	mb, cl, ce, dp = PresetsHelloWorld(b, db)
+	cl.KeywordSearchOff(true)
+	rmb := cl.RowMenu()
+
+	rmb.RowMenuItem("with-icon").Icon("mdi-close")
+	rmb.RowMenuItem("Delete").ComponentFunc(func(obj interface{}, id string, ctx *web.EventContext) h.HTMLComponent {
+		return nil
+	})
+	return
+}
 
 type Company struct {
 	ID   int
@@ -78,14 +110,32 @@ func PresetsListingCustomizationFields(b *presets.Builder, db *gorm.DB) (
 	ce *presets.EditingBuilder,
 	dp *presets.DetailingBuilder,
 ) {
-	b.I18n().
+	b.GetI18n().
 		SupportLanguages(language.English, language.SimplifiedChinese).
-		RegisterForModule(language.SimplifiedChinese, presets.ModelsI18nModuleKey, Messages_zh_CN)
+		RegisterForModule(language.SimplifiedChinese, presets.ModelsI18nModuleKey, Messages_zh_CN).
+		RegisterForModule(language.English, presets.ModelsI18nModuleKey, Messages_en_US)
 
 	mb, cl, ce, dp = PresetsHelloWorld(b, db)
 
 	cl = mb.Listing("ID", "Name", "Company", "Email").
-		SearchColumns("name", "email").SelectableColumns(true)
+		SearchColumns("name", "email").SelectableColumns(true).
+		OrderableFields([]*presets.OrderableField{
+			{
+				FieldName: "ID",
+				DBColumn:  "id",
+			},
+			{
+				FieldName: "Name",
+				DBColumn:  "name",
+			},
+		})
+
+	// if you want to customize the table head, you can use WrapColumns
+	cl.WrapColumns(presets.CustomizeColumnHeader(func(evCtx *web.EventContext, col *presets.Column, th h.MutableAttrHTMLComponent) (h.MutableAttrHTMLComponent, error) {
+		th.SetAttr("style", "min-width: 123px; color: red;")
+		return th, nil
+	}, "ID"))
+
 	cl.Field("Company").ComponentFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
 		c := obj.(*Customer)
 		var comp Company
@@ -98,7 +148,7 @@ func PresetsListingCustomizationFields(b *presets.Builder, db *gorm.DB) (
 			h.A().Text(comp.Name).
 				Class("text-decoration-none", "text-blue").
 				Href("javascript:void(0)").
-				Attr("@click",
+				Attr("@click.stop",
 					web.POST().EventFunc(actions.Edit).
 						Query(presets.ParamID, fmt.Sprint(comp.ID)).
 						URL("companies").
@@ -107,13 +157,20 @@ func PresetsListingCustomizationFields(b *presets.Builder, db *gorm.DB) (
 			h.A().Text("(Open in Dialog)").
 				Class("text-decoration-none", "text-blue").
 				Href("javascript:void(0)").
-				Attr("@click",
+				Attr("@click.stop",
 					web.POST().EventFunc(actions.Edit).
 						Query(presets.ParamID, fmt.Sprint(comp.ID)).
 						Query(presets.ParamOverlay, actions.Dialog).
 						URL("companies").
 						Go(),
 				),
+		)
+	})
+
+	cl.Field("Name").ComponentFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
+		c := obj.(*Customer)
+		return h.Td(
+			h.Div(h.Text(c.Name + "_" + "customizable")),
 		)
 	})
 
@@ -141,6 +198,18 @@ func PresetsListingCustomizationFields(b *presets.Builder, db *gorm.DB) (
 		}
 		return
 	})
+
+	gcm, err := cursor.NewGCM([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		panic(err)
+	}
+	gcmMiddleware := cursor.GCM[any](gcm)
+	cl.RelayPagination(
+		gorm2op.KeysetBasedPagination(true, gcmMiddleware),
+	)
+	comp.Listing().RelayPagination(
+		gorm2op.KeysetBasedPagination(true, gcmMiddleware),
+	)
 
 	return
 }
@@ -197,6 +266,13 @@ func PresetsListingCustomizationFilters(b *presets.Builder, db *gorm.DB) (
 				ItemType: vuetifyx.ItemTypeDatetimeRange,
 				// SQLCondition: `cast(strftime('%%s', created_at) as INTEGER) %s ?`,
 				SQLCondition: `created_at %s ?`,
+				DateOptions:  &[]vuetifyx.DateOption{{Label: "StartAt"}, {Label: "EndAt"}},
+
+				ValidateFunc: func(ctx *web.EventContext, vErr *web.ValidationErrors, it *vuetifyx.FilterItem) {
+					if it.ValueFrom >= it.ValueTo {
+						vErr.GlobalError("CreatedAt Error")
+					}
+				},
 			},
 			{
 				Key:      "approved",
@@ -204,6 +280,12 @@ func PresetsListingCustomizationFilters(b *presets.Builder, db *gorm.DB) (
 				ItemType: vuetifyx.ItemTypeDatetimeRange,
 				// SQLCondition: `cast(strftime('%%s', created_at) as INTEGER) %s ?`,
 				SQLCondition: `created_at %s ?`,
+				DateOptions:  &[]vuetifyx.DateOption{{Label: "Approved_Start_At", ClearText: "Cancel1"}, {Label: "Approved_End_At"}},
+				ValidateFunc: func(ctx *web.EventContext, vErr *web.ValidationErrors, it *vuetifyx.FilterItem) {
+					if it.ValueFrom >= it.ValueTo {
+						vErr.GlobalError("ApprovedAt Error")
+					}
+				},
 			},
 			{
 				Key:          "name",
@@ -240,6 +322,10 @@ func PresetsListingCustomizationTabs(b *presets.Builder, db *gorm.DB) (
 		db.First(&c)
 		return []*presets.FilterTab{
 			{
+				Label: "All",
+				Query: url.Values{},
+			},
+			{
 				Label: "Felix",
 				Query: url.Values{"name.ilike": []string{"felix"}},
 			},
@@ -249,11 +335,7 @@ func PresetsListingCustomizationTabs(b *presets.Builder, db *gorm.DB) (
 			},
 			{
 				Label: "Approved",
-				Query: url.Values{"approved.gt": []string{fmt.Sprint(1)}},
-			},
-			{
-				Label: "All",
-				Query: url.Values{"all": []string{"1"}},
+				Query: url.Values{"approved.gte": []string{time.Time{}.Format("2006-01-02 15:04")}},
 			},
 		}
 	})
@@ -273,7 +355,7 @@ func PresetsListingCustomizationBulkActions(b *presets.Builder, db *gorm.DB) (
 	mb, cl, ce, _ = PresetsListingCustomizationTabs(b, db)
 
 	cl.BulkAction("Approve").Label("Approve").
-		UpdateFunc(func(selectedIds []string, ctx *web.EventContext) (err error) {
+		UpdateFunc(func(selectedIds []string, ctx *web.EventContext, r *web.EventResponse) (err error) {
 			comment := ctx.R.FormValue("ApprovalComment")
 			if len(comment) < 10 {
 				ctx.Flash = "comment should larger than 10"
@@ -284,6 +366,11 @@ func PresetsListingCustomizationBulkActions(b *presets.Builder, db *gorm.DB) (
 				Updates(map[string]interface{}{"approved_at": time.Now(), "approval_comment": comment}).Error
 			if err != nil {
 				ctx.Flash = err.Error()
+			} else {
+				r.Emit(
+					presets.NotifModelsUpdated(&Customer{}),
+					presets.PayloadModelsUpdated{Ids: selectedIds},
+				)
 			}
 			return
 		}).
@@ -296,13 +383,21 @@ func PresetsListingCustomizationBulkActions(b *presets.Builder, db *gorm.DB) (
 			return v.VTextField().
 				Variant("underlined").
 				Attr(web.VField("ApprovalComment", comment)...).
-				Label("Comment").
+				Label("Content").
 				ErrorMessages(errorMessage)
 		})
 
 	cl.BulkAction("Delete").Label("Delete").
-		UpdateFunc(func(selectedIds []string, ctx *web.EventContext) (err error) {
+		UpdateFunc(func(selectedIds []string, ctx *web.EventContext, r *web.EventResponse) (err error) {
 			err = db.Where("id IN (?)", selectedIds).Delete(&Customer{}).Error
+			if err == nil {
+				r.Emit(
+					presets.NotifModelsDeleted(&Customer{}),
+					presets.PayloadModelsDeleted{
+						Ids: selectedIds,
+					},
+				)
+			}
 			return
 		}).
 		ComponentFunc(func(selectedIds []string, ctx *web.EventContext) h.HTMLComponent {
@@ -324,10 +419,10 @@ func PresetsListingCustomizationSearcher(b *presets.Builder, db *gorm.DB) (
 ) {
 	b.DataOperator(gorm2op.DataOperator(db))
 	mb = b.Model(&Customer{})
-	mb.Listing().SearchFunc(func(model interface{}, params *presets.SearchParams, ctx *web.EventContext) (r interface{}, totalCount int, err error) {
+	mb.Listing().SearchFunc(func(ctx *web.EventContext, params *presets.SearchParams) (result *presets.SearchResult, err error) {
 		// only display approved customers
 		qdb := db.Where("approved_at IS NOT NULL")
-		return gorm2op.DataOperator(qdb).Search(model, params, ctx)
+		return gorm2op.DataOperator(qdb).Search(ctx, params)
 	})
 	return
 }

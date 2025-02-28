@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/qor5/admin/v3/l10n"
+	"github.com/qor5/admin/v3/presets"
+
 	h "github.com/theplant/htmlgo"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -64,16 +66,6 @@ func New(db *gorm.DB, ops ...Option) *Builder {
 	for _, opFunc := range ops {
 		opFunc(b)
 	}
-
-	if err := db.AutoMigrate(&QorSEOSetting{}); err != nil {
-		panic(err)
-	}
-
-	// NOTE: do not replace b.seoRoot.name with defaultGlobalSEOName.
-	// because the name of global seo may be changed by user through WithGlobalSEOName option.
-	if err := insertIfNotExists(db, b.seoRoot.name, b.locales); err != nil {
-		panic(err)
-	}
 	return b
 }
 
@@ -88,6 +80,7 @@ type Builder struct {
 	seoRoot   *SEO
 	inherited bool
 	afterSave func(ctx context.Context, settingName string, locale string) error // hook called after saving
+	mb        *presets.ModelBuilder
 }
 
 // @snippet_end
@@ -506,4 +499,23 @@ func insertIfNotExists(db *gorm.DB, seoName string, locales []string) error {
 		return err
 	}
 	return nil
+}
+
+func (b *Builder) AutoMigrate() (r *Builder) {
+	if err := AutoMigrate(b, b.db); err != nil {
+		return
+	}
+	return b
+}
+
+func AutoMigrate(b *Builder, db *gorm.DB) (err error) {
+	if err = db.AutoMigrate(&QorSEOSetting{}); err != nil {
+		panic(err)
+	}
+	// NOTE: do not replace b.seoRoot.name with defaultGlobalSEOName.
+	// because the name of global seo may be changed by user through WithGlobalSEOName option.
+	if err = insertIfNotExists(db, b.seoRoot.name, b.locales); err != nil {
+		return
+	}
+	return
 }

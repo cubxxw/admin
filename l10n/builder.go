@@ -5,19 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"path"
 	"slices"
 	"time"
 
-	"github.com/qor5/admin/v3/activity"
-	"github.com/qor5/admin/v3/presets"
-	"github.com/qor5/admin/v3/utils"
 	"github.com/qor5/web/v3"
 	"github.com/sunfmin/reflectutils"
 	. "github.com/theplant/htmlgo"
 	"golang.org/x/text/language"
 	"gorm.io/gorm"
+
+	"github.com/qor5/admin/v3/activity"
+	"github.com/qor5/admin/v3/presets"
+	"github.com/qor5/admin/v3/utils"
 )
 
 var IncorrectLocaleErr = errors.New("incorrect locale")
@@ -36,6 +36,7 @@ type loc struct {
 	code  string
 	path  string
 	label string
+	img   string
 }
 
 func New(db *gorm.DB) *Builder {
@@ -64,7 +65,7 @@ func (b *Builder) Activity(v *activity.Builder) (r *Builder) {
 	return b
 }
 
-func (b *Builder) RegisterLocales(localeCode, localePath, localeLabel string) (r *Builder) {
+func (b *Builder) RegisterLocales(localeCode, localePath, localeLabel, img string) (r *Builder) {
 	if slices.ContainsFunc(b.locales, func(l *loc) bool {
 		return l.code == localeCode
 	}) {
@@ -75,6 +76,7 @@ func (b *Builder) RegisterLocales(localeCode, localePath, localeLabel string) (r
 		code:  localeCode,
 		path:  path.Join("/", localePath),
 		label: localeLabel,
+		img:   img,
 	})
 	return b
 }
@@ -135,6 +137,15 @@ func (b *Builder) GetLocaleLabel(localeCode string) string {
 		}
 	}
 	return "Unknown"
+}
+
+func (b *Builder) GetLocaleImg(localeCode string) string {
+	for _, l := range b.locales {
+		if l.code == localeCode {
+			return l.img
+		}
+	}
+	return ""
 }
 
 func (b *Builder) GetSupportLocaleCodes() (r []string) {
@@ -230,10 +241,11 @@ func (b *Builder) Install(pb *presets.Builder) error {
 
 	pb.AddWrapHandler(WrapHandlerKey, b.EnsureLocale)
 	pb.AddMenuTopItemFunc(MenuTopItemFunc, runSwitchLocaleFunc(b))
-	pb.I18n().
+	pb.GetI18n().
 		RegisterForModule(language.English, I18nLocalizeKey, Messages_en_US).
 		RegisterForModule(language.SimplifiedChinese, I18nLocalizeKey, Messages_zh_CN).
 		RegisterForModule(language.Japanese, I18nLocalizeKey, Messages_ja_JP)
+	pb.SwitchLocaleFunc(b.runSwitchLocaleFunc)
 	return nil
 }
 
@@ -260,7 +272,7 @@ func (b *Builder) ModelInstall(pb *presets.Builder, m *presets.ModelBuilder) err
 	m.Editing().Field("Locale")
 
 	m.Listing().WrapSearchFunc(func(searcher presets.SearchFunc) presets.SearchFunc {
-		return func(model interface{}, params *presets.SearchParams, ctx *web.EventContext) (r interface{}, totalCount int, err error) {
+		return func(ctx *web.EventContext, params *presets.SearchParams) (result *presets.SearchResult, err error) {
 			if localeCode := ctx.R.Context().Value(LocaleCode); localeCode != nil {
 				con := presets.SQLCondition{
 					Query: "locale_code = ?",
@@ -269,7 +281,7 @@ func (b *Builder) ModelInstall(pb *presets.Builder, m *presets.ModelBuilder) err
 				params.SQLConditions = append(params.SQLConditions, &con)
 			}
 
-			return searcher(model, params, ctx)
+			return searcher(ctx, params)
 		}
 	})
 
@@ -308,9 +320,6 @@ func (b *Builder) ModelInstall(pb *presets.Builder, m *presets.ModelBuilder) err
 		}
 	})
 
-	rmb := m.Listing().RowMenu()
-	rmb.RowMenuItem("Localize").ComponentFunc(localizeRowMenuItemFunc(m.Info(), "", url.Values{}))
-
 	registerEventFuncs(db, m, b, ab)
 
 	pb.FieldDefaults(presets.LIST).
@@ -333,7 +342,7 @@ func (b *Builder) ModelInstall(pb *presets.Builder, m *presets.ModelBuilder) err
 
 	pb.AddWrapHandler(WrapHandlerKey, b.EnsureLocale)
 	pb.AddMenuTopItemFunc(MenuTopItemFunc, runSwitchLocaleFunc(b))
-	pb.I18n().
+	pb.GetI18n().
 		RegisterForModule(language.English, I18nLocalizeKey, Messages_en_US).
 		RegisterForModule(language.SimplifiedChinese, I18nLocalizeKey, Messages_zh_CN).
 		RegisterForModule(language.Japanese, I18nLocalizeKey, Messages_ja_JP)

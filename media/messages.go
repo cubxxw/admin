@@ -1,5 +1,7 @@
 package media
 
+import "fmt"
+
 type Messages struct {
 	Crop                        string
 	CropImage                   string
@@ -19,6 +21,25 @@ type Messages struct {
 	Videos                      string
 	Files                       string
 	SampleArgsText              func(id string) string
+
+	Copy                                  string
+	CopyUpdated                           string
+	Rename                                string
+	RenameUpdated                         string
+	Name                                  string
+	NewFolder                             string
+	UpdateDescription                     string
+	UpdateDescriptionTextFieldPlaceholder string
+	ChooseFolder                          string
+	MoveTo                                string
+	MovedFailed                           string
+	MovedSuccess                          string
+	Folders                               string
+	UploadFile                            string
+	DeleteObjects                         func(v int) string
+	MediaLibrary                          string
+	UnSupportFileType                     string
+	CopyImageURL                          string
 }
 
 var Messages_en_US = &Messages{
@@ -39,6 +60,28 @@ var Messages_en_US = &Messages{
 	Images:                      "Images",
 	Videos:                      "Videos",
 	Files:                       "Files",
+
+	Copy:                                  "Copy",
+	CopyUpdated:                           "Copy Updated",
+	Rename:                                "Rename",
+	RenameUpdated:                         "Rename Updated",
+	Name:                                  "Name",
+	NewFolder:                             "New Folder",
+	UpdateDescription:                     "Update Description",
+	UpdateDescriptionTextFieldPlaceholder: "Description",
+	ChooseFolder:                          "Choose Folder",
+	MoveTo:                                "Move to",
+	MovedFailed:                           "Moved Failed",
+	MovedSuccess:                          "Moved Success",
+	Folders:                               "Folders",
+	UploadFile:                            "Upload File",
+	DeleteObjects: func(v int) string {
+		return fmt.Sprintf(`Are you sure you want to delete %v objects`, v)
+	},
+
+	MediaLibrary:      "Media Library",
+	UnSupportFileType: "UnSupport FileType",
+	CopyImageURL:      "copy image URL",
 }
 
 var Messages_zh_CN = &Messages{
@@ -59,6 +102,27 @@ var Messages_zh_CN = &Messages{
 	Images:                      "图片",
 	Videos:                      "视频",
 	Files:                       "文件",
+
+	Copy:                                  "拷贝",
+	CopyUpdated:                           "拷贝成功",
+	Rename:                                "重命名",
+	RenameUpdated:                         "重命名成功",
+	Name:                                  "名称",
+	NewFolder:                             "新文件夹",
+	UpdateDescription:                     "更新描述",
+	UpdateDescriptionTextFieldPlaceholder: "描述",
+	ChooseFolder:                          "选择文件夹",
+	MoveTo:                                "移动到",
+	MovedFailed:                           "移动失败",
+	MovedSuccess:                          "移动成功",
+	Folders:                               "文件夹",
+	UploadFile:                            "上传文件",
+	DeleteObjects: func(v int) string {
+		return fmt.Sprintf(`是否删除 %v 个条目`, v)
+	},
+	MediaLibrary:      "媒体库",
+	UnSupportFileType: "不支持的文件类型",
+	CopyImageURL:      "拷贝图片链接",
 }
 
 var Messages_ja_JP = &Messages{
@@ -79,4 +143,25 @@ var Messages_ja_JP = &Messages{
 	Images:                      "画像",
 	Videos:                      "動画",
 	Files:                       "ファイル",
+
+	Copy:                                  "コピー",
+	CopyUpdated:                           "コピーが更新されました",
+	Rename:                                "名前を変更する",
+	RenameUpdated:                         "名前の変更が成功しました",
+	Name:                                  "名称",
+	NewFolder:                             "新規フォルダ",
+	UpdateDescription:                     "画像の説明を編集する",
+	UpdateDescriptionTextFieldPlaceholder: "画像の説明",
+	ChooseFolder:                          "フォルダを選択",
+	MoveTo:                                "移動する",
+	MovedFailed:                           "移動に失敗しました",
+	MovedSuccess:                          "移動に成功しました",
+	Folders:                               "フォルダ",
+	UploadFile:                            "ファイルをアップロード",
+	DeleteObjects: func(v int) string {
+		return fmt.Sprintf(`Are you sure you want to delete %v objects`, v)
+	},
+	MediaLibrary:      "メディアライブラリ",
+	UnSupportFileType: "サポートされていないファイル形式",
+	CopyImageURL:      "画像のURLをコピー",
 }

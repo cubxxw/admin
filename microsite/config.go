@@ -29,7 +29,7 @@ func (mib *Builder) Install(b *presets.Builder) error {
 		panic(err)
 	}
 
-	b.I18n().
+	b.GetI18n().
 		RegisterForModule(language.English, I18nMicrositeKey, Messages_en_US).
 		RegisterForModule(language.SimplifiedChinese, I18nMicrositeKey, Messages_zh_CN)
 
@@ -52,7 +52,7 @@ func (mib *Builder) Install(b *presets.Builder) error {
 				h.Div(
 					h.Div(
 						h.Label(i18n.PT(ctx.R, presets.ModelsI18nModuleKey, model.Info().Label(), "Current Package")).Class("v-label v-label--active theme--light").Style("left: 0px; right: auto; position: absolute;"),
-						h.A().Href(this.GetPackageUrl(storage.GetEndpoint())).Text(this.GetPackage().FileName),
+						h.A().Href(this.GetPackageUrl(storage.GetEndpoint(ctx.R.Context()))).Text(this.GetPackage().FileName),
 					).Class("v-text-field__slot").Style("padding: 8px 0;"),
 				).Class("v-input__slot"),
 			).Class("v-input v-input--is-label-active v-input--is-dirty theme--light v-text-field v-text-field--is-booted"),
@@ -89,8 +89,12 @@ func (mib *Builder) Install(b *presets.Builder) error {
 			if err != nil {
 				return
 			}
+			defer f.Close()
 
-			fileBytes, err := io.ReadAll(f)
+			var buf bytes.Buffer
+			tee := io.TeeReader(f, &buf)
+
+			err = utils.Upload(storage, packagePath, tee)
 			if err != nil {
 				return
 			}
@@ -100,13 +104,8 @@ func (mib *Builder) Install(b *presets.Builder) error {
 					mib)
 			},
 				fileName,
-				bytes.NewReader(fileBytes),
+				bytes.NewReader(buf.Bytes()),
 				storage)
-			if err != nil {
-				return
-			}
-
-			err = utils.Upload(storage, packagePath, bytes.NewReader(fileBytes))
 			if err != nil {
 				return
 			}
@@ -135,14 +134,14 @@ func (mib *Builder) Install(b *presets.Builder) error {
 					if k != 0 {
 						content = append(content, h.Br())
 					}
-					content = append(content, h.A(h.Text(v)).Href(this.GetPublishedUrl(storage.GetEndpoint(), v)))
+					content = append(content, h.A(h.Text(v)).Href(this.GetPublishedUrl(storage.GetEndpoint(ctx.R.Context()), v)))
 				}
 			} else {
 				for k, v := range this.GetFileList() {
 					if k != 0 {
 						content = append(content, h.Br())
 					}
-					content = append(content, h.A(h.Text(v)).Href(getPreviewUrl(this, storage.GetEndpoint(), v, mib)))
+					content = append(content, h.A(h.Text(v)).Href(getPreviewUrl(this, storage.GetEndpoint(ctx.R.Context()), v, mib)))
 				}
 			}
 

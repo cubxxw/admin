@@ -3,30 +3,30 @@ package presets
 import (
 	"fmt"
 	"strings"
+	"time"
 
-	"github.com/jinzhu/inflection"
-	"github.com/qor5/admin/v3/presets/actions"
 	"github.com/qor5/web/v3"
-	"github.com/qor5/x/v3/i18n"
 	"github.com/qor5/x/v3/perm"
 	. "github.com/qor5/x/v3/ui/vuetify"
 	vx "github.com/qor5/x/v3/ui/vuetifyx"
 	h "github.com/theplant/htmlgo"
+
+	"github.com/qor5/admin/v3/presets/actions"
 )
 
 type EditingBuilder struct {
-	mb               *ModelBuilder
-	Fetcher          FetchFunc
-	Setter           SetterFunc
-	Saver            SaveFunc
-	Deleter          DeleteFunc
-	Validator        ValidateFunc
-	tabPanels        []TabComponentFunc
-	hiddenFuncs      []ObjectComponentFunc
-	sidePanel        ObjectComponentFunc
-	actionsFunc      ObjectComponentFunc
-	editingTitleFunc EditingTitleComponentFunc
-	onChangeAction   OnChangeActionFunc
+	mb                       *ModelBuilder
+	Fetcher                  FetchFunc
+	Setter                   SetterFunc
+	Saver                    SaveFunc
+	Deleter                  DeleteFunc
+	Validator                ValidateFunc
+	tabPanels                []TabComponentFunc
+	hiddenFuncs              []ObjectComponentFunc
+	sidePanel                ObjectComponentFunc
+	actionsFunc              ObjectComponentFunc
+	editingTitleFunc         EditingTitleComponentFunc
+	idCurrentActiveProcessor IdCurrentActiveProcessor
 	FieldsBuilder
 }
 
@@ -61,25 +61,45 @@ func (b *EditingBuilder) Creating(vs ...interface{}) (r *EditingBuilder) {
 
 	if b.mb.creating == nil {
 		b.mb.creating = &EditingBuilder{
-			mb:        b.mb,
-			Fetcher:   b.Fetcher,
-			Setter:    b.Setter,
-			Saver:     b.Saver,
-			Deleter:   b.Deleter,
-			Validator: b.Validator,
+			mb: b.mb,
+			Fetcher: func(obj interface{}, id string, ctx *web.EventContext) (interface{}, error) {
+				return b.Fetcher(obj, id, ctx)
+			},
+			Setter: func(obj interface{}, ctx *web.EventContext) {
+				if b.Setter != nil {
+					b.Setter(obj, ctx)
+				}
+			},
+			Saver: func(obj interface{}, id string, ctx *web.EventContext) error {
+				return b.Saver(obj, id, ctx)
+			},
+			Deleter: func(obj interface{}, id string, ctx *web.EventContext) error {
+				return b.Deleter(obj, id, ctx)
+			},
+			Validator: func(obj interface{}, ctx *web.EventContext) (r web.ValidationErrors) {
+				if b.Validator == nil {
+					return r
+				}
+				return b.Validator(obj, ctx)
+			},
 		}
 	}
 
-	b.mb.creating.FieldsBuilder = *b.FieldsBuilder.Clone()
 	r = b.mb.creating
 	if len(vs) == 0 {
-		for _, f := range b.fields {
-			vs = append(vs, f.name)
+		if len(b.fieldsLayout) == 0 {
+			for _, f := range b.fields {
+				vs = append(vs, f.name)
+			}
+		} else {
+			vs = CloneFieldsLayout(b.fieldsLayout)
 		}
 	}
-
-	r.FieldsBuilder = *b.FieldsBuilder.Only(vs...)
-
+	if len(vs) == 0 {
+		r.FieldsBuilder = *b.FieldsBuilder.Clone()
+	} else {
+		r.FieldsBuilder = *b.FieldsBuilder.Only(vs...)
+	}
 	return r
 }
 
@@ -128,11 +148,6 @@ func (b *EditingBuilder) SetterFunc(v SetterFunc) (r *EditingBuilder) {
 	return b
 }
 
-func (b *EditingBuilder) OnChangeActionFunc(v OnChangeActionFunc) (r *EditingBuilder) {
-	b.onChangeAction = v
-	return b
-}
-
 func (b *EditingBuilder) WrapSetterFunc(w func(in SetterFunc) SetterFunc) (r *EditingBuilder) {
 	b.Setter = w(b.Setter)
 	return b
@@ -168,6 +183,17 @@ func (b *EditingBuilder) EditingTitleFunc(v EditingTitleComponentFunc) (r *Editi
 	return b
 }
 
+func (b *EditingBuilder) WrapIdCurrentActive(w func(in IdCurrentActiveProcessor) IdCurrentActiveProcessor) (r *EditingBuilder) {
+	if b.idCurrentActiveProcessor == nil {
+		b.idCurrentActiveProcessor = w(func(ctx *web.EventContext, current string) (string, error) {
+			return current, nil
+		})
+	} else {
+		b.idCurrentActiveProcessor = w(b.idCurrentActiveProcessor)
+	}
+	return b
+}
+
 func (b *EditingBuilder) formNew(ctx *web.EventContext) (r web.EventResponse, err error) {
 	if b.mb.Info().Verifier().Do(PermCreate).WithReq(ctx.R).IsAllowed() != nil {
 		ShowMessage(&r, perm.PermissionDenied.Error(), "warning")
@@ -179,6 +205,9 @@ func (b *EditingBuilder) formNew(ctx *web.EventContext) (r web.EventResponse, er
 		creatingB = b.mb.creating
 	}
 
+	if b.idCurrentActiveProcessor != nil {
+		ctx.WithContextValue(ctxKeyIdCurrentActiveProcessor{}, b.idCurrentActiveProcessor)
+	}
 	b.mb.p.overlay(ctx, &r, creatingB.editFormFor(nil, ctx), b.mb.rightDrawerWidth)
 	return
 }
@@ -188,18 +217,21 @@ func (b *EditingBuilder) formEdit(ctx *web.EventContext) (r web.EventResponse, e
 		ShowMessage(&r, perm.PermissionDenied.Error(), "warning")
 		return
 	}
+	if b.idCurrentActiveProcessor != nil {
+		ctx.WithContextValue(ctxKeyIdCurrentActiveProcessor{}, b.idCurrentActiveProcessor)
+	}
 	b.mb.p.overlay(ctx, &r, b.editFormFor(nil, ctx), b.mb.rightDrawerWidth)
 	return
 }
 
 func (b *EditingBuilder) singletonPageFunc(ctx *web.EventContext) (r web.PageResponse, err error) {
-	if b.mb.Info().Verifier().Do(PermUpdate).WithReq(ctx.R).IsAllowed() != nil {
+	if b.mb.Info().Verifier().Do(PermGet).WithReq(ctx.R).IsAllowed() != nil {
 		err = perm.PermissionDenied
 		return
 	}
 
-	msgr := MustGetMessages(ctx.R)
-	title := msgr.EditingObjectTitle(i18n.T(ctx.R, ModelsI18nModuleKey, inflection.Singular(b.mb.label)), "")
+	msgr := b.mb.mustGetMessages(ctx.R)
+	title := msgr.EditingObjectTitle(b.mb.Info().LabelName(ctx, true), "")
 	r.PageTitle = title
 	obj, err := b.Fetcher(b.mb.NewModel(), "", ctx)
 	if err == ErrRecordNotFound {
@@ -216,20 +248,23 @@ func (b *EditingBuilder) singletonPageFunc(ctx *web.EventContext) (r web.PageRes
 }
 
 func (b *EditingBuilder) editFormFor(obj interface{}, ctx *web.EventContext) h.HTMLComponent {
-	msgr := MustGetMessages(ctx.R)
-	id := ctx.R.FormValue(ParamID)
-	overlayType := ctx.R.FormValue(ParamOverlay)
-	isAutoSave := b.onChangeAction != nil && overlayType == actions.Content
-
+	var (
+		msgr          = b.mb.mustGetMessages(ctx.R)
+		id            = ctx.R.FormValue(ParamID)
+		overlayType   = ctx.R.FormValue(ParamOverlay)
+		onChangeEvent = fmt.Sprintf(`if (vars.%s) { vars.%s.editing=true };`, VarsPresetsDataChanged, VarsPresetsDataChanged)
+		autosave      = overlayType == actions.Content
+	)
 	if b.mb.singleton {
 		id = vx.ObjectID(obj)
 	}
 
 	buttonLabel := msgr.Create
-	var disableUpdateBtn bool
+	labelName := b.mb.Info().LabelName(ctx, true)
+	var noPerm bool
 	var title h.HTMLComponent
 	title = h.Text(msgr.CreatingObjectTitle(
-		i18n.T(ctx.R, ModelsI18nModuleKey, inflection.Singular(b.mb.label)),
+		labelName,
 	))
 	if len(id) > 0 {
 		if obj == nil {
@@ -239,16 +274,18 @@ func (b *EditingBuilder) editFormFor(obj interface{}, ctx *web.EventContext) h.H
 				panic(err)
 			}
 		}
-		disableUpdateBtn = b.mb.Info().Verifier().Do(PermUpdate).ObjectOn(obj).WithReq(ctx.R).IsAllowed() != nil
+		noPerm = b.mb.Info().Verifier().Do(PermUpdate).ObjectOn(obj).WithReq(ctx.R).IsAllowed() != nil
 		buttonLabel = msgr.Update
 		editingTitleText := msgr.EditingObjectTitle(
-			i18n.T(ctx.R, ModelsI18nModuleKey, inflection.Singular(b.mb.label)),
+			labelName,
 			getPageTitle(obj, id))
 		if b.editingTitleFunc != nil {
 			title = b.editingTitleFunc(obj, editingTitleText, ctx)
 		} else {
 			title = h.Text(editingTitleText)
 		}
+	} else {
+		noPerm = b.mb.Info().Verifier().Do(PermCreate).ObjectOn(obj).WithReq(ctx.R).IsAllowed() != nil
 	}
 
 	if obj == nil {
@@ -276,14 +313,9 @@ func (b *EditingBuilder) editFormFor(obj interface{}, ctx *web.EventContext) h.H
 		if text != "" {
 			notice = web.Scope(
 				VSnackbar(
-					h.Text(text),
-					web.Slot(
-						VBtn("").Variant("text").
-							Attr("@click", "locals.show = false").
-							Children(VIcon("mdi-close")),
-					).Name("actions"),
+					h.Div().Style("white-space: pre-wrap").Text(fmt.Sprintf(`{{ %q }}`, text)),
 				).Location("top").
-					Timeout(-1).
+					Timeout(2000).
 					Color(color).
 					Attr("v-model", "locals.show"),
 			).VSlot("{ locals }").Init(`{ show: true }`)
@@ -292,24 +324,26 @@ func (b *EditingBuilder) editFormFor(obj interface{}, ctx *web.EventContext) h.H
 
 	queries := ctx.Queries()
 	if b.mb.singleton {
-		queries.Add(ParamID, id)
-	}
-	updateBtn := VBtn(buttonLabel).
-		Color("primary").
-		Attr("@click", web.Plaid().
-			EventFunc(actions.Update).
-			Queries(queries).
-			URL(b.mb.Info().ListingHref()).
-			Go())
-	if disableUpdateBtn {
-		updateBtn = updateBtn.Disabled(disableUpdateBtn)
-	} else {
-		updateBtn = updateBtn.Attr(":disabled", "isFetching").
-			Attr(":loading", "isFetching")
+		queries.Set(ParamID, id)
 	}
 	var actionButtons h.HTMLComponent = h.Components(
 		VSpacer(),
-		updateBtn,
+		h.Iff(!noPerm, func() h.HTMLComponent {
+			return web.Scope(
+				VBtn(buttonLabel).
+					Color("primary").
+					Variant(VariantFlat).
+					Attr(":disabled", "xLocals.isFetching").
+					Attr(":loading", "xLocals.isFetching").
+					Attr("@click", web.Plaid().
+						BeforeScript("xLocals.isFetching=true").
+						EventFunc(actions.Update).
+						Queries(queries).
+						AfterScript("xLocals.isFetching=false").
+						URL(b.mb.Info().ListingHref()).
+						Go()),
+			).VSlot("{locals:xLocals}").Init("{isFetching:false}")
+		}),
 	)
 
 	if b.actionsFunc != nil {
@@ -321,23 +355,27 @@ func (b *EditingBuilder) editFormFor(obj interface{}, ctx *web.EventContext) h.H
 		hiddenComps = append(hiddenComps, hf(obj, ctx))
 	}
 
+	if id == "" {
+		ctx = ctx.WithContextValue(ctxKeyForceForCreating{}, true)
+	}
 	formContent := web.Scope(h.Components(
 		VCardText(
 			h.Components(hiddenComps...),
+			web.Listen(b.mb.NotifModelsValidate(), setFieldErrorsScript),
 			b.ToComponent(b.mb.Info(), obj, ctx),
 		),
-		h.If(!isAutoSave, VCardActions(actionButtons)),
+		h.If(!autosave, VCardActions(actionButtons)),
 	))
 
-	var asideContent h.HTMLComponent = defaultToPage(commonPageConfig{
+	asideContent := defaultToPage(commonPageConfig{
 		formContent: formContent,
 		tabPanels:   b.tabPanels,
 		sidePanel:   b.sidePanel,
 	}, obj, ctx)
 
-	closeBtnVarScript := CloseRightDrawerVarScript
+	closeBtnVarScript := CloseRightDrawerVarConfirmScript
 	if overlayType == actions.Dialog {
-		closeBtnVarScript = closeDialogVarScript
+		closeBtnVarScript = CloseDialogVarScript
 	}
 	scope := web.Scope(
 		notice,
@@ -345,9 +383,8 @@ func (b *EditingBuilder) editFormFor(obj interface{}, ctx *web.EventContext) h.H
 			h.If(!b.mb.singleton,
 				VAppBar(
 					VToolbarTitle("").Class("pl-2").
-						Children(title),
-					VSpacer(),
-					h.If(!isAutoSave, VBtn("").Icon(true).Children(
+						Children(title).ClassIf("pr-5", autosave),
+					h.If(!autosave, VBtn("").Icon(true).Children(
 						VIcon("mdi-close"),
 					).Attr("@click.stop", closeBtnVarScript)),
 				).Color("white").Elevation(0),
@@ -355,13 +392,77 @@ func (b *EditingBuilder) editFormFor(obj interface{}, ctx *web.EventContext) h.H
 			VMain(
 				VSheet(
 					VCard(asideContent).Variant(VariantFlat),
-				).Class("pa-2"),
+				).Class("pa-2 detailing-page-wrap"),
 			),
-		)).VSlot("{ form }")
-	if isAutoSave {
-		scope.OnChange(b.onChangeAction(id, ctx))
+		),
+	).VSlot("{ form}")
+	operateID := fmt.Sprint(time.Now().UnixNano())
+	onChangeEvent += checkFormChangeScript
+	if autosave {
+		onChangeEvent += web.Plaid().URL(ctx.R.URL.Path).
+			BeforeScript(fmt.Sprintf(`dash.__currentValidateKeys=null;dash.__ValidateOperateID=%q`, operateID)).
+			EventFunc(actions.Validate).
+			Query(ParamID, id).
+			Query(ParamOperateID, operateID).
+			Query(ParamOverlay, ctx.Param(ParamOverlay)).
+			Go()
+	} else {
+		onChangeEvent += setValidateKeysScript +
+			web.Plaid().URL(ctx.R.URL.Path).
+				BeforeScript(fmt.Sprintf(`dash.__ValidateOperateID=%q;`, operateID)).
+				EventFunc(actions.Validate).
+				Query(ParamID, id).
+				Query(ParamOperateID, operateID).
+				Query(ParamOverlay, ctx.Param(ParamOverlay)).
+				Go()
 	}
-	return scope
+	return web.Scope(scope.OnChange(onChangeEvent).UseDebounce(500)).VSlot("{dash}").DashInit("{errorMessages:{}}")
+}
+
+func (b *EditingBuilder) doValidate(ctx *web.EventContext) (r web.EventResponse, err error) {
+	var (
+		id        = ctx.Param(ParamID)
+		operateID = ctx.Param(ParamOperateID)
+		obj       = b.mb.NewModel()
+		vErr      web.ValidationErrors
+		usingB    = b
+	)
+
+	if b.mb.creating != nil && id == "" {
+		usingB = b.mb.creating
+	}
+	defer func() {
+		web.AppendRunScripts(&r,
+			fmt.Sprintf(`if (dash.__ValidateOperateID==%q){%s}`, operateID,
+				web.Emit(
+					b.mb.NotifModelsValidate(),
+					PayloadModelsSetter{
+						FieldErrors: vErr.FieldErrors(),
+						Id:          id,
+						Passed:      !vErr.HaveErrors(),
+					},
+				)),
+		)
+
+		if vErr.HaveErrors() && vErr.HaveGlobalErrors() {
+			web.AppendRunScripts(&r, ShowSnackbarScript(strings.Join(vErr.GetGlobalErrors(), ";"), ColorWarning))
+		}
+	}()
+	obj, vErr = usingB.FetchAndUnmarshal(id, false, ctx)
+	if vErr.HaveErrors() && vErr.HaveGlobalErrors() {
+		return
+	}
+	vErrSetter := vErr
+	if b.mb.Info().Verifier().Do(PermUpdate).ObjectOn(obj).WithReq(ctx.R).IsAllowed() != nil {
+		vErr.GlobalError(perm.PermissionDenied.Error())
+		return
+	}
+	if usingB.Validator != nil {
+		vErr = usingB.Validator(obj, ctx)
+		_ = vErrSetter.Merge(&vErr)
+	}
+	vErr = vErrSetter
+	return
 }
 
 func (b *EditingBuilder) doDelete(ctx *web.EventContext) (r web.EventResponse, err1 error) {
@@ -378,45 +479,22 @@ func (b *EditingBuilder) doDelete(ctx *web.EventContext) (r web.EventResponse, e
 			ShowMessage(&r, err.Error(), "warning")
 			return
 		}
+
+		r.Emit(
+			b.mb.NotifModelsDeleted(),
+			PayloadModelsDeleted{Ids: []string{id}},
+		)
 	}
+
+	web.AppendRunScripts(&r, "locals.deleteConfirmation = false")
 
 	if event := ctx.Queries().Get(ParamAfterDeleteEvent); event != "" {
 		web.AppendRunScripts(&r,
-			"locals.deleteConfirmation = false",
 			web.Plaid().
 				EventFunc(event).
 				Queries(ctx.Queries()).
 				Go(),
 		)
-	} else {
-		removeSelectQuery := web.Var(fmt.Sprintf(`{value: %s, add: false, remove: true}`, h.JSONString(id)))
-		if isInDialogFromQuery(ctx) {
-			u := fmt.Sprintf("%s?%s", b.mb.Info().ListingHref(), ctx.Queries().Get(ParamListingQueries))
-			web.AppendRunScripts(&r,
-				"locals.deleteConfirmation = false",
-				web.Plaid().
-					URL(u).
-					EventFunc(actions.UpdateListingDialog).
-					MergeQuery(true).
-					Queries(ctx.Queries()).
-					Query(ParamSelectedIds, removeSelectQuery).
-					Go(),
-			)
-		} else {
-			// refresh current page
-
-			// TODO: response location does not support `valueOp`
-			// r.PushState = web.Location(nil).
-			// 	MergeQuery(true).
-			//  Query(ParamSelectedIds, removeSelectQuery)
-			web.AppendRunScripts(&r,
-				web.Plaid().
-					PushState(true).
-					MergeQuery(true).
-					Query(ParamSelectedIds, removeSelectQuery).
-					Go(),
-			)
-		}
 	}
 	return
 }
@@ -442,48 +520,72 @@ func (b *EditingBuilder) doUpdate(
 	r *web.EventResponse,
 	// will not close drawer/dialog
 	silent bool,
-) (err error) {
+) (created bool, err error) {
 	id := ctx.R.FormValue(ParamID)
+	created = id == ""
+
 	usingB := b
 	if b.mb.creating != nil && id == "" {
 		usingB = b.mb.creating
 	}
 
 	obj, vErr := usingB.FetchAndUnmarshal(id, true, ctx)
-	if vErr.HaveErrors() {
-		usingB.UpdateOverlayContent(ctx, r, obj, "", &vErr)
-		return &vErr
-	}
 
+	modifiedIndexes := ContextModifiedIndexesBuilder(ctx).FromHidden(ctx.R)
+	modifiedIndexes.deletedValues = make(map[string][]string)
+	modifiedIndexes.sortedValues = make(map[string][]string)
+	if vErr.HaveErrors() && vErr.HaveGlobalErrors() {
+		usingB.UpdateOverlayContent(ctx, r, obj, "", &vErr)
+		return created, &vErr
+	}
+	vErrSetter := vErr
 	if len(id) > 0 {
 		if b.mb.Info().Verifier().Do(PermUpdate).ObjectOn(obj).WithReq(ctx.R).IsAllowed() != nil {
 			b.UpdateOverlayContent(ctx, r, obj, "", perm.PermissionDenied)
-			return perm.PermissionDenied
+			return created, perm.PermissionDenied
 		}
 	} else {
 		if b.mb.Info().Verifier().Do(PermCreate).ObjectOn(obj).WithReq(ctx.R).IsAllowed() != nil {
 			b.UpdateOverlayContent(ctx, r, obj, "", perm.PermissionDenied)
-			return perm.PermissionDenied
+			return created, perm.PermissionDenied
 		}
 	}
 
 	if usingB.Validator != nil {
-		if vErr = usingB.Validator(obj, ctx); vErr.HaveErrors() {
-			usingB.UpdateOverlayContent(ctx, r, obj, "", &vErr)
-			return &vErr
-		}
+		vErr = usingB.Validator(obj, ctx)
+		_ = vErrSetter.Merge(&vErr)
+		vErr = vErrSetter
+
+	}
+	if vErr.HaveErrors() {
+		usingB.UpdateOverlayContent(ctx, r, obj, "", &vErr)
+		return created, &vErr
 	}
 
 	err1 := usingB.Saver(obj, id, ctx)
 	if err1 != nil {
 		usingB.UpdateOverlayContent(ctx, r, obj, "", err1)
-		return err1
+		return created, err1
+	}
+
+	if id == "" {
+		r.Emit(
+			b.mb.NotifModelsCreated(),
+			PayloadModelsCreated{
+				Models: []any{obj},
+			},
+		)
+	} else {
+		r.Emit(
+			b.mb.NotifModelsUpdated(),
+			PayloadModelsUpdated{Ids: []string{id}, Models: map[string]any{id: obj}},
+		)
 	}
 
 	overlayType := ctx.R.FormValue(ParamOverlay)
 	script := CloseRightDrawerVarScript
 	if overlayType == actions.Dialog {
-		script = closeDialogVarScript
+		script = CloseDialogVarScript
 	}
 	if silent {
 		script = ""
@@ -500,27 +602,19 @@ func (b *EditingBuilder) doUpdate(
 
 		return
 	}
-
-	if isInDialogFromQuery(ctx) {
-		web.AppendRunScripts(r,
-			web.Plaid().
-				URL(ctx.R.RequestURI).
-				EventFunc(actions.UpdateListingDialog).
-				StringQuery(ctx.R.URL.Query().Get(ParamListingQueries)).
-				Go(),
-		)
-	} else {
-		r.PushState = web.Location(nil)
-	}
 	web.AppendRunScripts(r, script)
 	return
 }
 
 func (b *EditingBuilder) defaultUpdate(ctx *web.EventContext) (r web.EventResponse, err error) {
-	uErr := b.doUpdate(ctx, &r, false)
+	created, uErr := b.doUpdate(ctx, &r, false)
 	if uErr == nil {
-		msgr := MustGetMessages(ctx.R)
-		ShowMessage(&r, msgr.SuccessfullyUpdated, "")
+		msgr := b.mb.mustGetMessages(ctx.R)
+		if created {
+			ShowMessage(&r, msgr.SuccessfullyCreated, "")
+		} else {
+			ShowMessage(&r, msgr.SuccessfullyUpdated, "")
+		}
 	}
 	return r, nil
 }
@@ -529,7 +623,8 @@ func (b *EditingBuilder) SaveOverlayContent(
 	ctx *web.EventContext,
 	r *web.EventResponse,
 ) (err error) {
-	return b.doUpdate(ctx, r, true)
+	_, err = b.doUpdate(ctx, r, true)
+	return err
 }
 
 func (b *EditingBuilder) RunSetterFunc(ctx *web.EventContext, removeDeletedAndSort bool, toObj interface{}) (vErr web.ValidationErrors) {
@@ -579,4 +674,44 @@ func (b *EditingBuilder) UpdateOverlayContent(
 		Name: p,
 		Body: b.editFormFor(obj, ctx),
 	})
+}
+
+func (b *EditingBuilder) Section(sections ...*SectionBuilder) *EditingBuilder {
+	for _, sb := range sections {
+		if sb.isList {
+			panic("list section can not in edit")
+		}
+		if sb.isUsed {
+			panic("section is used")
+		}
+		sb.isUsed = true
+		sb.registerEvent()
+		sb.isEdit = true
+
+		sb.WrapSaveBtnFunc(func(in ObjectBoolFunc) ObjectBoolFunc {
+			return func(obj interface{}, ctx *web.EventContext) bool {
+				return false
+			}
+		})
+
+		sb.ComponentFunc(func(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent {
+			return web.Portal(
+				sb.editComponent(obj, field, ctx),
+			).Name(sb.FieldPortalName())
+		})
+
+		b.Field(sb.name).Component(sb).
+			SetterFunc(func(obj interface{}, field *FieldContext, ctx *web.EventContext) (err error) {
+				err = sb.defaultUnmarshalFunc(obj, ctx)
+				if err != nil {
+					return err
+				}
+				if sb.setter != nil {
+					err = sb.setter(obj, ctx)
+				}
+				return err
+			})
+	}
+
+	return b
 }

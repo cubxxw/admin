@@ -1,14 +1,22 @@
 package gorm2op
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
 
-	"github.com/qor5/admin/v3/presets"
+	"github.com/pkg/errors"
+
 	"github.com/qor5/web/v3"
+	"github.com/samber/lo"
+	"github.com/theplant/relay"
+	"github.com/theplant/relay/cursor"
+	"github.com/theplant/relay/gormrelay"
 	"gorm.io/gorm"
+
+	"github.com/qor5/admin/v3/presets"
 )
 
 var wildcardReg = regexp.MustCompile(`[%_]`)
@@ -18,17 +26,23 @@ func DataOperator(db *gorm.DB) (r *DataOperatorBuilder) {
 	return
 }
 
+type (
+	ctxKeyDBForRelay struct{}
+	CtxKeyDB         struct{}
+)
+
 type DataOperatorBuilder struct {
 	db *gorm.DB
 }
 
-func (op *DataOperatorBuilder) Search(obj interface{}, params *presets.SearchParams, ctx *web.EventContext) (r interface{}, totalCount int, err error) {
+func (op *DataOperatorBuilder) Search(evCtx *web.EventContext, params *presets.SearchParams) (result *presets.SearchResult, err error) {
 	ilike := "ILIKE"
-	if op.db.Dialector.Name() == "sqlite" {
+	db := op.getDB(evCtx)
+	if db.Dialector.Name() == "sqlite" {
 		ilike = "LIKE"
 	}
 
-	wh := op.db.Model(obj)
+	wh := db.Model(params.Model)
 	if len(params.KeywordColumns) > 0 && len(params.Keyword) > 0 {
 		var segs []string
 		var args []interface{}
@@ -41,41 +55,73 @@ func (op *DataOperatorBuilder) Search(obj interface{}, params *presets.SearchPar
 	}
 
 	for _, cond := range params.SQLConditions {
-		wh = wh.Where(strings.Replace(cond.Query, " ILIKE ", " "+ilike+" ", -1), cond.Args...)
+		wh = wh.Where(strings.ReplaceAll(cond.Query, " ILIKE ", " "+ilike+" "), cond.Args...)
 	}
 
-	var c int64
-	err = wh.Count(&c).Error
-	if err != nil {
-		return
-	}
-	totalCount = int(c)
-
-	if params.PerPage > 0 {
-		wh = wh.Limit(int(params.PerPage))
-		page := params.Page
-		if page == 0 {
-			page = 1
+	var p relay.Pagination[any]
+	var req *relay.PaginateRequest[any]
+	ctx := evCtx.R.Context()
+	if params.RelayPagination != nil {
+		ctx = context.WithValue(ctx, ctxKeyDBForRelay{}, wh)
+		p, err = params.RelayPagination(evCtx)
+		if err != nil {
+			return nil, err
 		}
-		offset := (page - 1) * params.PerPage
-		wh = wh.Offset(int(offset))
+		req = params.RelayPaginateRequest
+		if req == nil {
+			return nil, errors.New("RelayPaginateRequest is required")
+		}
+	} else {
+		if params.RelayPaginateRequest != nil {
+			return nil, errors.New("RelayPagination is required")
+		}
+
+		p = relay.New(
+			gormrelay.NewOffsetAdapter[any](wh),
+			relay.EnsureLimits[any](presets.PerPageDefault, presets.PerPageMax),
+		)
+		req = &relay.PaginateRequest[any]{
+			OrderBys: params.OrderBys,
+		}
+		if params.PerPage > 0 {
+			req.First = lo.ToPtr(int(params.PerPage))
+			page := params.Page
+			if page <= 0 {
+				page = 1
+			}
+			offset := int((page - 1) * params.PerPage)
+			if offset > 0 {
+				req.After = lo.ToPtr(cursor.EncodeOffsetCursor(offset - 1))
+			}
+		}
+		ctx = relay.WithSkip(ctx, relay.Skip{Edges: true})
 	}
 
-	orderBy := params.OrderBy
-	if len(orderBy) > 0 {
-		wh = wh.Order(orderBy)
-	}
-
-	err = wh.Find(obj).Error
+	resp, err := p.Paginate(ctx, req)
 	if err != nil {
 		return
 	}
-	r = reflect.ValueOf(obj).Elem().Interface()
-	return
+
+	// []any => []modelType
+	nodes := reflect.MakeSlice(reflect.SliceOf(reflect.TypeOf(params.Model)), len(resp.Nodes), len(resp.Nodes))
+	for i := 0; i < len(resp.Nodes); i++ {
+		nodes.Index(i).Set(reflect.ValueOf(resp.Nodes[i]))
+	}
+
+	pageInfo := resp.PageInfo
+	if pageInfo == nil {
+		// In fact, the current scenario does not use SkipPageInfo, so it will not be triggered here.
+		pageInfo = &relay.PageInfo{}
+	}
+	return &presets.SearchResult{
+		PageInfo:   *pageInfo,
+		TotalCount: resp.TotalCount,
+		Nodes:      nodes.Interface(),
+	}, nil
 }
 
-func (op *DataOperatorBuilder) primarySluggerWhere(obj interface{}, id string) *gorm.DB {
-	wh := op.db.Model(obj)
+func (op *DataOperatorBuilder) primarySluggerWhere(db *gorm.DB, obj interface{}, id string) *gorm.DB {
+	wh := db.Model(obj)
 
 	if id == "" {
 		return wh
@@ -94,9 +140,10 @@ func (op *DataOperatorBuilder) primarySluggerWhere(obj interface{}, id string) *
 }
 
 func (op *DataOperatorBuilder) Fetch(obj interface{}, id string, ctx *web.EventContext) (r interface{}, err error) {
-	err = op.primarySluggerWhere(obj, id).First(obj).Error
+	db := op.getDB(ctx)
+	err = op.primarySluggerWhere(db, obj, id).First(obj).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, presets.ErrRecordNotFound
 		}
 		return
@@ -105,16 +152,40 @@ func (op *DataOperatorBuilder) Fetch(obj interface{}, id string, ctx *web.EventC
 	return
 }
 
+func (op *DataOperatorBuilder) getDB(ctx *web.EventContext) *gorm.DB {
+	if ctx.R != nil {
+		db, ok := ctx.ContextValue(ctxKeyDBForRelay{}).(*gorm.DB)
+		if ok {
+			return db
+		}
+	}
+	return op.db
+}
+
 func (op *DataOperatorBuilder) Save(obj interface{}, id string, ctx *web.EventContext) (err error) {
+	db := op.getDB(ctx)
 	if id == "" {
-		err = op.db.Create(obj).Error
+		err = db.Create(obj).Error
 		return
 	}
-	err = op.primarySluggerWhere(obj, id).Save(obj).Error
+	err = op.saveOrUpdate(db, obj, id)
 	return
 }
 
+func (op *DataOperatorBuilder) saveOrUpdate(db *gorm.DB, obj interface{}, id string) (err error) {
+	var count int64
+	if op.primarySluggerWhere(db, obj, id).Count(&count).Error != nil {
+		return
+	}
+	if count > 0 {
+		return op.primarySluggerWhere(db, obj, id).Select("*").Updates(obj).Error
+	}
+	return op.primarySluggerWhere(db, obj, id).Save(obj).Error
+}
+
 func (op *DataOperatorBuilder) Delete(obj interface{}, id string, ctx *web.EventContext) (err error) {
-	err = op.primarySluggerWhere(obj, id).Delete(obj).Error
+	db := op.getDB(ctx)
+
+	err = op.primarySluggerWhere(db, obj, id).Delete(obj).Error
 	return
 }

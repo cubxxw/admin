@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/iancoleman/strcase"
-	"github.com/qor5/web/v3"
-	"github.com/qor5/x/v3/i18n"
-	. "github.com/qor5/x/v3/ui/vuetify"
-	"github.com/qor5/x/v3/ui/vuetifyx"
 	"github.com/sunfmin/reflectutils"
 	h "github.com/theplant/htmlgo"
+
+	"github.com/qor5/web/v3"
+
+	"github.com/qor5/x/v3/ui/vuetifyx"
 )
 
 type FieldDefaultBuilder struct {
@@ -175,50 +175,54 @@ func cfTextTd(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTM
 }
 
 func cfCheckbox(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent {
-	return VCheckbox().
-		Attr(web.VField(field.FormKey, reflectutils.MustGet(obj, field.Name).(bool))...).
+	return vuetifyx.VXCheckbox().
+		Attr(VFieldError(field.FormKey, reflectutils.MustGet(obj, field.Name).(bool), field.Errors)...).
 		Label(field.Label).
-		ErrorMessages(field.Errors...).
 		Disabled(field.Disabled)
 }
 
 func cfNumber(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent {
-	return VTextField().
+	return vuetifyx.VXField().
 		Type("number").
-		Variant(FieldVariantUnderlined).
-		Attr(web.VField(field.FormKey, fmt.Sprint(reflectutils.MustGet(obj, field.Name)))...).
+		Attr(VFieldError(field.FormKey, fmt.Sprint(reflectutils.MustGet(obj, field.Name)), field.Errors)...).
 		Label(field.Label).
-		ErrorMessages(field.Errors...).
 		Disabled(field.Disabled)
 }
 
 func cfTime(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent {
-	msgr := i18n.MustGetModuleMessages(ctx.R, CoreI18nModuleKey, Messages_en_US).(*Messages)
+	return DateTimePicker(obj, field, ctx)
+}
+
+func DateTimePicker(obj interface{}, field *FieldContext, _ *web.EventContext) *vuetifyx.VXDatePickerBuilder {
 	val := ""
 	if v := field.Value(obj); v != nil {
 		switch vt := v.(type) {
 		case time.Time:
-			val = vt.Format("2006-01-02 15:04")
+			if !vt.IsZero() {
+				val = vt.Format("2006-01-02 15:04")
+			}
 		case *time.Time:
-			val = vt.Format("2006-01-02 15:04")
+			if !vt.IsZero() {
+				val = vt.Format("2006-01-02 15:04")
+			}
 		default:
 			panic(fmt.Sprintf("unknown time type: %T\n", v))
 		}
 	}
-	return vuetifyx.VXDateTimePicker().
+	return vuetifyx.VXDatepicker().
+		Type("datetimepicker").
+		Format("YYYY-MM-DD HH:mm").
 		Label(field.Label).
-		Attr(web.VField(field.FormKey, val)...).
-		Value(val).
-		TimePickerProps(vuetifyx.TimePickerProps{
-			Format:     "24hr",
-			Scrollable: true,
-		}).
-		DialogWidth(640).
-		ClearText(msgr.Clear).
-		OkText(msgr.OK)
+		Attr(VFieldError(field.FormKey, val, field.Errors)...).
+		Clearable(true).
+		Disabled(field.Disabled)
 }
 
 func cfTimeSetter(obj interface{}, field *FieldContext, ctx *web.EventContext) (err error) {
+	return DateTimeSetter(obj, field, ctx)
+}
+
+func DateTimeSetter(obj interface{}, field *FieldContext, ctx *web.EventContext) (err error) {
 	v := ctx.R.Form.Get(field.FormKey)
 	if v == "" {
 		return reflectutils.Set(obj, field.Name, nil)
@@ -231,26 +235,67 @@ func cfTimeSetter(obj interface{}, field *FieldContext, ctx *web.EventContext) (
 }
 
 func cfTextField(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent {
-	return VTextField().
-		Type("text").
-		Variant(FieldVariantUnderlined).
-		Attr(web.VField(field.FormKey, fmt.Sprint(reflectutils.MustGet(obj, field.Name)))...).
-		Label(field.Label).
-		ErrorMessages(field.Errors...).
+	return TextField(obj, field, ctx)
+}
+
+func VFieldError(name string, value interface{}, errorMessages interface{}) []interface{} {
+	var (
+		objValue = map[string]interface{}{
+			name: value,
+		}
+		errorValue = map[string]interface{}{
+			name: errorMessages,
+		}
+	)
+	return append([]interface{}{
+		"v-model",
+		fmt.Sprintf("form[%s]", h.JSONString(name)),
+		":error-messages",
+		fmt.Sprintf("dash.errorMessages[%q]", name),
+		"v-assign:append",
+		fmt.Sprintf("[%s, %s]", "dash.errorMessages", h.JSONString(errorValue)),
+	}, web.VAssign("form", objValue)...)
+}
+
+func TextField(obj interface{}, field *FieldContext, ctx *web.EventContext) *vuetifyx.VXFieldBuilder {
+	return vuetifyx.VXField().Label(field.Label).
+		Attr(VFieldError(field.FormKey, fmt.Sprint(reflectutils.MustGet(obj, field.Name)), field.Errors)...).
 		Disabled(field.Disabled)
 }
 
-func cfReadonlyText(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent {
+func SelectField(obj interface{}, field *FieldContext, ctx *web.EventContext) *vuetifyx.VXSelectBuilder {
+	return vuetifyx.VXSelect().
+		Label(field.Label).
+		Disabled(field.Disabled).
+		Attr(VFieldError(field.FormKey, fmt.Sprint(reflectutils.MustGet(obj, field.Name)), field.Errors)...)
+}
+
+func ReadonlyText(obj interface{}, field *FieldContext, ctx *web.EventContext) *vuetifyx.VXReadonlyFieldBuilder {
 	return vuetifyx.VXReadonlyField().
 		Label(field.Label).
 		Value(field.StringValue(obj))
 }
 
+func cfReadonlyText(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent {
+	return ReadonlyText(obj, field, ctx)
+}
+
+func ReadonlyCheckbox(obj interface{}, field *FieldContext, ctx *web.EventContext) *vuetifyx.VXCheckboxBuilder {
+	msgr := field.ModelInfo.mb.mustGetMessages(ctx.R)
+	return vuetifyx.VXCheckbox().
+		Title(field.Label).
+		TrueLabel(msgr.CheckboxTrueLabel).
+		FalseLabel(msgr.CheckboxFalseLabel).
+		TrueIcon("mdi-circle-outline").
+		FalseIcon("mdi-window-close").
+		HideDetails(true).
+		TrueIconColor("primary").
+		ModelValue(reflectutils.MustGet(obj, field.Name)).
+		Readonly(true)
+}
+
 func cfReadonlyCheckbox(obj interface{}, field *FieldContext, ctx *web.EventContext) h.HTMLComponent {
-	return vuetifyx.VXReadonlyField().
-		Label(field.Label).
-		Value(reflectutils.MustGet(obj, field.Name)).
-		Checkbox(true)
+	return ReadonlyCheckbox(obj, field, ctx)
 }
 
 func (b *FieldDefaults) builtInFieldTypes() {
@@ -267,6 +312,11 @@ func (b *FieldDefaults) builtInFieldTypes() {
 			b.FieldType(v).
 				ComponentFunc(cfTextTd)
 		}
+
+		for _, v := range timeVals {
+			b.FieldType(v).
+				ComponentFunc(cfTextTd)
+		}
 		return
 	}
 
@@ -280,6 +330,11 @@ func (b *FieldDefaults) builtInFieldTypes() {
 		}
 
 		for _, v := range stringVals {
+			b.FieldType(v).
+				ComponentFunc(cfReadonlyText)
+		}
+
+		for _, v := range timeVals {
 			b.FieldType(v).
 				ComponentFunc(cfReadonlyText)
 		}
@@ -306,5 +361,4 @@ func (b *FieldDefaults) builtInFieldTypes() {
 	}
 
 	b.Exclude("ID")
-	return
 }

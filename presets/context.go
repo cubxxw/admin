@@ -9,8 +9,10 @@ type presetsCtx int
 
 const (
 	ctxInDialog presetsCtx = iota
-	ctxActionsComponent
+	ctxActionsComponentTeleportToID
 	ctxDetailingAfterTitleComponent
+	ctxEventFuncAddonWrapper
+	CtxPageTitleComponent
 )
 
 func IsInDialog(ctx *web.EventContext) bool {
@@ -21,12 +23,30 @@ func IsInDialog(ctx *web.EventContext) bool {
 	return v
 }
 
-func GetActionsComponent(ctx *web.EventContext) h.HTMLComponent {
-	v, _ := ctx.ContextValue(ctxActionsComponent).(h.HTMLComponent)
+func GetActionsComponentTeleportToID(ctx *web.EventContext) string {
+	v, _ := ctx.ContextValue(ctxActionsComponentTeleportToID).(string)
 	return v
 }
 
 func GetComponentFromContext(ctx *web.EventContext, key presetsCtx) (h.HTMLComponent, bool) {
 	v, ok := ctx.ContextValue(key).(h.HTMLComponent)
 	return v, ok
+}
+
+type EventFuncAddon func(ctx *web.EventContext, r *web.EventResponse) (err error)
+
+func getEventFuncAddonWrapper(ctx *web.EventContext) (func(in EventFuncAddon) EventFuncAddon, bool) {
+	v, ok := ctx.ContextValue(ctxEventFuncAddonWrapper).(func(in EventFuncAddon) EventFuncAddon)
+	return v, ok
+}
+
+func WrapEventFuncAddon(ctx *web.EventContext, w func(in EventFuncAddon) EventFuncAddon) {
+	prev, ok := getEventFuncAddonWrapper(ctx)
+	if !ok {
+		ctx.WithContextValue(ctxEventFuncAddonWrapper, w)
+	} else {
+		ctx.WithContextValue(ctxEventFuncAddonWrapper, func(in EventFuncAddon) EventFuncAddon {
+			return w(prev(in))
+		})
+	}
 }

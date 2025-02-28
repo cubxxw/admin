@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/ory/ladon"
@@ -13,7 +14,6 @@ import (
 
 func initPermission(b *presets.Builder, db *gorm.DB) {
 	perm.Verbose = true
-
 	b.Permission(
 		perm.New().Policies(
 			perm.PolicyFor(perm.Anybody).WhoAre(perm.Allowed).ToDo(perm.Anything).On(perm.Anything),
@@ -24,7 +24,6 @@ func initPermission(b *presets.Builder, db *gorm.DB) {
 				models.RoleManager,
 			).WhoAre(perm.Denied).ToDo(presets.PermCreate, presets.PermUpdate, presets.PermDelete).On("*:roles:*", "*:users:*"),
 			perm.PolicyFor(models.RoleViewer).WhoAre(perm.Denied).ToDo(presets.PermCreate, presets.PermUpdate, presets.PermDelete).On(perm.Anything),
-
 			perm.PolicyFor(models.RoleManager).WhoAre(perm.Denied).ToDo(perm.Anything).
 				On("*:activity_logs").On("*:activity_logs:*").
 				Given(perm.Conditions{
@@ -42,7 +41,7 @@ func initPermission(b *presets.Builder, db *gorm.DB) {
 				switch v := obj.(type) {
 				case *activity.ActivityLog:
 					u := getCurrentUser(r)
-					if u.GetID() == v.GetUserID() {
+					if fmt.Sprint(u.GetID()) == v.UserID {
 						c["is_authorized"] = true
 					} else {
 						c["is_authorized"] = false

@@ -6,14 +6,17 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/qor/oss"
-	"github.com/qor5/admin/v3/presets"
-	"github.com/qor5/admin/v3/presets/gorm2op"
-	"github.com/qor5/admin/v3/publish"
 	"github.com/qor5/web/v3"
+	"github.com/qor5/x/v3/oss"
+	"github.com/qor5/x/v3/perm"
 	vx "github.com/qor5/x/v3/ui/vuetifyx"
 	h "github.com/theplant/htmlgo"
 	"gorm.io/gorm"
+
+	"github.com/qor5/admin/v3/activity"
+	"github.com/qor5/admin/v3/presets"
+	"github.com/qor5/admin/v3/presets/gorm2op"
+	"github.com/qor5/admin/v3/publish"
 )
 
 // @snippet_begin(PublishInjectModules)
@@ -60,29 +63,37 @@ var (
 	_ publish.UnPublishInterface = (*WithPublishProduct)(nil)
 )
 
-func (p *WithPublishProduct) GetPublishActions(db *gorm.DB, ctx context.Context, storage oss.StorageInterface) (objs []*publish.PublishAction, err error) {
+func (p *WithPublishProduct) GetPublishActions(ctx context.Context, db *gorm.DB, storage oss.StorageInterface) (actions []*publish.PublishAction, err error) {
 	// create publish actions
 	return
 }
 
-func (p *WithPublishProduct) GetUnPublishActions(db *gorm.DB, ctx context.Context, storage oss.StorageInterface) (objs []*publish.PublishAction, err error) {
+func (p *WithPublishProduct) GetUnPublishActions(ctx context.Context, db *gorm.DB, storage oss.StorageInterface) (actions []*publish.PublishAction, err error) {
 	// create unpublish actions
 	return
 }
 
 // @snippet_end
 func PublishExample(b *presets.Builder, db *gorm.DB) http.Handler {
+	return publishExample(b, db, nil)
+}
+
+func publishExample(b *presets.Builder, db *gorm.DB, customize func(mb *presets.ModelBuilder, pb *publish.Builder)) http.Handler {
 	err := db.AutoMigrate(&WithPublishProduct{})
 	if err != nil {
 		panic(err)
 	}
 
 	b.DataOperator(gorm2op.DataOperator(db))
-
+	b.Permission(
+		perm.New().Policies(
+			perm.PolicyFor(perm.Anybody).WhoAre(perm.Allowed).ToDo(perm.Anything).On(perm.Anything),
+		),
+	)
 	// @snippet_begin(PublishConfigureView)
 	mb := b.Model(&WithPublishProduct{})
 	dp := mb.Detailing(publish.VersionsPublishBar, "Details").Drawer(true)
-	dp.Section("Details").
+	detailSection := presets.NewSectionBuilder(mb, "Details").
 		ViewComponentFunc(func(obj interface{}, field *presets.FieldContext, ctx *web.EventContext) h.HTMLComponent {
 			product := obj.(*WithPublishProduct)
 			detail := vx.DetailInfo(
@@ -94,12 +105,24 @@ func PublishExample(b *presets.Builder, db *gorm.DB) http.Handler {
 			return detail
 		}).
 		Editing("Name", "Price")
-
-	publisher := publish.New(db, nil)
+	dp.Section(detailSection)
+	ab := activity.New(db, func(ctx context.Context) (*activity.User, error) {
+		return &activity.User{
+			ID:   "1",
+			Name: "John",
+		}, nil
+	}).
+		AutoMigrate()
+	publisher := publish.New(db, nil).Activity(ab)
 	b.Use(publisher)
 	mb.Use(publisher)
+
+	if customize != nil {
+		customize(mb, publisher)
+	}
+
 	// run the publisher job if Schedule is used
-	go publish.RunPublisher(db, nil, publisher)
+	go publish.RunPublisher(context.Background(), db, nil, publisher)
 	// @snippet_end
 	return b
 }
